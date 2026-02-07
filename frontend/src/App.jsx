@@ -47,11 +47,9 @@ const RSS_FEEDS = [
 ];
 
 const DURATION_PRESETS = [
+  { label: '10 min', value: 600 },
+  { label: '30 min', value: 1800 },
   { label: '1 hour', value: 3600 },
-  { label: '6 hours', value: 21600 },
-  { label: '24 hours', value: 86400 },
-  { label: '3 days', value: 259200 },
-  { label: '7 days', value: 604800 },
 ];
 
 const STAKE_PRESETS = ['0.001', '0.01', '0.05', '0.1'];
@@ -163,12 +161,20 @@ function MentionFiDashboard() {
     if (!activeWallet) return;
     setLoading(true); setError(null);
     try {
+      const provider = new ethers.JsonRpcProvider(RPC_URL);
+      const repContract = new ethers.Contract(REP_TOKEN_ADDRESS, REP_TOKEN_ABI, provider);
+      const alreadyReg = await repContract.isRegistered(activeWallet.address);
+      if (alreadyReg) { setIsRegistered(true); fetchData(); setLoading(false); return; }
       const signer = await getSigner();
       const tx = await new ethers.Contract(REP_TOKEN_ADDRESS, REP_TOKEN_ABI, signer).register();
       await tx.wait();
       setIsRegistered(true);
       fetchData();
-    } catch (e) { setError(e.message); }
+    } catch (e) {
+      if (e.message?.includes('AlreadyRegistered') || e.message?.includes('revert')) {
+        setIsRegistered(true); fetchData();
+      } else { setError('Registration failed: ' + (e.shortMessage || e.message?.slice(0, 100))); }
+    }
     finally { setLoading(false); }
   };
 
@@ -190,6 +196,7 @@ function MentionFiDashboard() {
 
   const handleBet = async (questId, position) => {
     if (!activeWallet) return;
+    if (userPositions[questId]) { setError('You already have a position on this quest. One bet per quest.'); return; }
     setLoading(true); setError(null);
     try {
       const signer = await getSigner();
@@ -199,7 +206,11 @@ function MentionFiDashboard() {
       const tx = await contract.submitClaim(questId, position, repStake, 70, { value: ethStake });
       await tx.wait();
       fetchData();
-    } catch (e) { setError(e.message); }
+    } catch (e) {
+      if (e.message?.includes('AlreadyClaimed')) setError('You already bet on this quest. One position per quest — no hedging.');
+      else if (e.message?.includes('insufficient')) setError('Not enough ETH or REP for this bet.');
+      else setError('Bet failed: ' + (e.shortMessage || e.message?.slice(0, 120)));
+    }
     finally { setLoading(false); }
   };
 
@@ -209,10 +220,21 @@ function MentionFiDashboard() {
     try {
       const signer = await getSigner();
       const contract = new ethers.Contract(QUEST_ADDRESS, QUEST_ABI, signer);
+      // Check quest status first
+      const q = await contract.quests(questId);
+      if (Number(q.status) !== 2) { setError('Quest not resolved yet. The oracle resolves quests automatically — wait for the time window to end.'); setLoading(false); return; }
+      const claim = await contract.claims(questId, activeWallet.address);
+      if (Number(claim.position) === 0) { setError('You have no position on this quest.'); setLoading(false); return; }
+      if (claim.claimed) { setError('Already claimed rewards for this quest.'); setLoading(false); return; }
       const tx = await contract.claimReward(questId);
       await tx.wait();
       fetchData();
-    } catch (e) { setError(e.message); }
+    } catch (e) {
+      if (e.message?.includes('NoClaim')) setError('No position to claim on this quest.');
+      else if (e.message?.includes('QuestNotResolved')) setError('Quest not resolved yet — wait for the oracle.');
+      else if (e.message?.includes('AlreadyClaimed')) setError('Already claimed.');
+      else setError('Claim failed: ' + (e.shortMessage || e.message?.slice(0, 120)));
+    }
     finally { setLoading(false); }
   };
 
@@ -244,26 +266,34 @@ function MentionFiDashboard() {
         <div style={st.content}>
           <div style={{ textAlign: 'center', marginBottom: '48px' }}>
             <h1 style={{ color: C.text1, fontSize: '42px', fontWeight: '700', margin: 0, letterSpacing: '-2px' }}>MENTIONFI</h1>
-            <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '8px' }}>
+            <div style={{ color: C.yes, fontSize: '13px', letterSpacing: '3px', marginTop: '4px', fontWeight: '600' }}>MENTION MARKETS</div>
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '10px' }}>
               <span style={st.badge}>MegaETH</span>
-              <span style={{ ...st.badge, borderColor: C.yes, color: C.yes }}>TESTNET</span>
+              <span style={{ ...st.badge, borderColor: C.yes, color: C.yes }}>LIVE</span>
+              <span style={{ ...st.badge, borderColor: C.warn, color: C.warn }}>10-60 MIN</span>
             </div>
-            <p style={{ color: C.text2, marginTop: '16px', fontSize: '15px', maxWidth: '520px', margin: '16px auto 0' }}>
-              Prediction market for news mentions. Pick a keyword, choose a feed, bet YES or NO on whether it appears. Oracle checks every 30s. Winners take the pool.
+            <p style={{ color: C.text2, marginTop: '16px', fontSize: '14px', maxWidth: '480px', margin: '16px auto 0', lineHeight: '1.6' }}>
+              Fast prediction markets on news mentions. Pick a keyword. Choose a feed. Bet if it gets mentioned. Oracle scans every 30s. Winners take the pool.
             </p>
+            <div style={{ display: 'flex', gap: '16px', justifyContent: 'center', marginTop: '16px', flexWrap: 'wrap' }}>
+              <span style={{ color: C.text3, fontSize: '11px' }}>10 REP + 0.001 ETH min</span>
+              <span style={{ color: C.text3, fontSize: '11px' }}>|</span>
+              <span style={{ color: C.text3, fontSize: '11px' }}>90% to winners</span>
+              <span style={{ color: C.text3, fontSize: '11px' }}>|</span>
+              <span style={{ color: C.text3, fontSize: '11px' }}>Auto-resolved by oracle</span>
+            </div>
           </div>
 
           {/* Stats preview */}
           <div style={{ display: 'flex', gap: '24px', justifyContent: 'center', marginBottom: '32px', flexWrap: 'wrap' }}>
-            <StatBox label="Quests" value={quests.length} />
-            <StatBox label="Active" value={activeQuests.length} color={C.yes} />
+            <StatBox label="Live Markets" value={activeQuests.length} color={C.yes} />
             <StatBox label="Resolved" value={resolvedQuests.length} />
-            <StatBox label="ETH Staked" value={totalEthStaked.toFixed(3)} />
+            <StatBox label="Total Pool" value={`${totalEthStaked.toFixed(3)} ETH`} color={C.warn} />
           </div>
 
           <div style={{ textAlign: 'center' }}>
-            <button onClick={login} style={st.primaryBtn}>SIGN IN TO PLAY</button>
-            <p style={{ color: C.text3, fontSize: '12px', marginTop: '8px' }}>10 REP + 0.001 ETH min stake</p>
+            <button onClick={login} style={st.primaryBtn}>ENTER MENTION MARKETS</button>
+            <p style={{ color: C.text3, fontSize: '11px', marginTop: '8px' }}>Connect wallet. Register. Get 100 REP. Start betting.</p>
           </div>
 
           {/* Show active quests preview */}
@@ -299,8 +329,8 @@ function MentionFiDashboard() {
         {/* Registration */}
         {!isRegistered ? (
           <div style={st.glass}>
-            <h2 style={{ color: C.text1, fontSize: '18px', margin: '0 0 8px' }}>Register Agent</h2>
-            <p style={{ color: C.text2, fontSize: '13px', marginBottom: '16px' }}>Get 100 REP to start predicting keyword mentions</p>
+            <h2 style={{ color: C.text1, fontSize: '18px', margin: '0 0 8px' }}>Join Mention Markets</h2>
+            <p style={{ color: C.text2, fontSize: '13px', marginBottom: '16px' }}>Register to receive 100 REP — your reputation stake for predictions. REP grows when you win, shrinks when you lose.</p>
             <button onClick={handleRegister} disabled={loading} style={st.primaryBtn}>
               {loading ? 'REGISTERING...' : 'REGISTER & GET 100 REP'}
             </button>
