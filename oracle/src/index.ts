@@ -2,6 +2,7 @@ import { ethers } from "ethers";
 import Parser from "rss-parser";
 import http from "http";
 import "dotenv/config";
+import { RSS_FEEDS_META, type FeedInfo } from "./feeds.js";
 
 // MegaETH RPC
 const MEGAETH_TESTNET_RPC = "https://carrot.megaeth.com/rpc";
@@ -15,6 +16,12 @@ const MENTION_QUEST_ABI = [
   "function closeQuest(uint256 questId) external",
   "event QuestCreated(uint256 indexed questId, address indexed creator, bytes32 keywordHash, string sourceUrl, uint64 windowStart, uint64 windowEnd)",
   "event QuestResolved(uint256 indexed questId, uint8 outcome, address indexed oracle)",
+];
+
+// REP Token ABI (read-only for API)
+const REP_TOKEN_ABI = [
+  "function balanceOf(address owner, uint256 id) view returns (uint256)",
+  "function registered(address) view returns (bool)",
 ];
 
 // Quest status enum
@@ -44,6 +51,35 @@ interface Quest {
   outcome: number;
 }
 
+interface QuestStakes {
+  totalYesRepStake: bigint;
+  totalNoRepStake: bigint;
+  totalYesEthStake: bigint;
+  totalNoEthStake: bigint;
+}
+
+interface CachedQuest {
+  id: number;
+  creator: string;
+  keywordHash: string;
+  sourceUrl: string;
+  windowStart: number;
+  windowEnd: number;
+  createdAt: number;
+  status: string;
+  outcome: string;
+  stakes: {
+    yesRep: string;
+    noRep: string;
+    yesEth: string;
+    noEth: string;
+  };
+  odds: {
+    yes: number;
+    no: number;
+  };
+}
+
 interface OracleStats {
   startTime: Date;
   questsResolved: number;
@@ -52,20 +88,29 @@ interface OracleStats {
   errors: number;
 }
 
+const STATUS_LABELS = ["open", "closed", "resolved", "cancelled"];
+const OUTCOME_LABELS = ["none", "yes", "no"];
+
 class MentionFiOracle {
   private provider: ethers.JsonRpcProvider;
   private wallet: ethers.Wallet;
   private questContract: ethers.Contract;
+  private repContract: ethers.Contract | null = null;
   private rssParser: Parser;
   private stats: OracleStats;
 
   // Cache for keyword → hash mapping
   private keywordCache: Map<string, string> = new Map();
 
+  // API quest cache (refreshed every tick)
+  private questCache: CachedQuest[] = [];
+  private questCacheTime: number = 0;
+
   constructor(
     rpc: string,
     privateKey: string,
-    questAddress: string
+    questAddress: string,
+    repAddress?: string
   ) {
     this.provider = new ethers.JsonRpcProvider(rpc);
     this.wallet = new ethers.Wallet(privateKey, this.provider);
@@ -74,11 +119,20 @@ class MentionFiOracle {
       MENTION_QUEST_ABI,
       this.wallet
     );
+
+    if (repAddress) {
+      this.repContract = new ethers.Contract(
+        repAddress,
+        REP_TOKEN_ABI,
+        this.provider
+      );
+    }
+
     this.rssParser = new Parser({
       timeout: 10000,
       headers: {
-        'User-Agent': 'MentionFi-Oracle/1.0'
-      }
+        "User-Agent": "MentionFi-Oracle/1.0",
+      },
     });
 
     this.stats = {
@@ -92,6 +146,7 @@ class MentionFiOracle {
     this.log("Oracle initialized");
     this.log(`Wallet: ${this.wallet.address}`);
     this.log(`Quest Contract: ${questAddress}`);
+    if (repAddress) this.log(`REP Contract: ${repAddress}`);
   }
 
   private log(msg: string) {
@@ -99,13 +154,155 @@ class MentionFiOracle {
   }
 
   private logError(msg: string, error?: unknown) {
-    console.error(`[${new Date().toISOString()}] ERROR: ${msg}`, error || '');
+    console.error(`[${new Date().toISOString()}] ERROR: ${msg}`, error || "");
     this.stats.errors++;
   }
 
   getStats(): OracleStats {
     return { ...this.stats };
   }
+
+  // ─── API Methods ───────────────────────────────────────────────
+
+  /**
+   * Get all quests with stakes and odds (cached)
+   */
+  async getAllQuests(limit: number = 30): Promise<CachedQuest[]> {
+    // Return cache if fresh (< 30s)
+    if (
+      this.questCache.length > 0 &&
+      Date.now() - this.questCacheTime < 30000
+    ) {
+      return this.questCache.slice(0, limit);
+    }
+    await this.refreshQuestCache();
+    return this.questCache.slice(0, limit);
+  }
+
+  /**
+   * Get a single quest by ID
+   */
+  async getQuestDetail(id: number): Promise<CachedQuest | null> {
+    const quests = await this.getAllQuests(100);
+    return quests.find((q) => q.id === id) || null;
+  }
+
+  /**
+   * Get all RSS feeds with metadata
+   */
+  getFeeds(): FeedInfo[] {
+    return Object.values(RSS_FEEDS_META);
+  }
+
+  /**
+   * Get protocol stats
+   */
+  async getProtocolStats(): Promise<Record<string, unknown>> {
+    const quests = await this.getAllQuests(100);
+    const stats = this.getStats();
+    const uptime = Math.floor(
+      (Date.now() - stats.startTime.getTime()) / 1000
+    );
+
+    let totalEthStaked = 0n;
+    for (const q of quests) {
+      totalEthStaked +=
+        BigInt(q.stakes.yesEth) + BigInt(q.stakes.noEth);
+    }
+
+    return {
+      totalQuests: quests.length,
+      openQuests: quests.filter((q) => q.status === "open").length,
+      resolvedQuests: quests.filter((q) => q.status === "resolved").length,
+      totalEthStaked: ethers.formatEther(totalEthStaked),
+      totalFeeds: Object.keys(RSS_FEEDS_META).length,
+      oracleUptime: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
+      questsResolvedByOracle: stats.questsResolved,
+      errors: stats.errors,
+    };
+  }
+
+  /**
+   * Get agent profile: REP balance + registration status
+   */
+  async getAgentProfile(
+    address: string
+  ): Promise<Record<string, unknown> | null> {
+    if (!this.repContract) {
+      return { error: "REP contract not configured" };
+    }
+    try {
+      const [balance, isRegistered] = await Promise.all([
+        this.repContract.balanceOf(address, 0),
+        this.repContract.registered(address),
+      ]);
+      return {
+        address,
+        registered: isRegistered,
+        repBalance: ethers.formatEther(balance),
+        repBalanceWei: balance.toString(),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Refresh the quest cache from on-chain data
+   */
+  private async refreshQuestCache(): Promise<void> {
+    try {
+      const questCount = Number(await this.questContract.questCount());
+      const quests: CachedQuest[] = [];
+
+      // Fetch last 50 quests
+      const start = Math.max(1, questCount - 49);
+      for (let i = questCount; i >= start; i--) {
+        try {
+          const [q, s] = await Promise.all([
+            this.questContract.quests(i),
+            this.questContract.questStakes(i),
+          ]);
+
+          const yesEth = BigInt(s[2]);
+          const noEth = BigInt(s[3]);
+          const totalEth = yesEth + noEth;
+          const yesOdds =
+            totalEth > 0n ? Number((yesEth * 10000n) / totalEth) / 100 : 50;
+          const noOdds =
+            totalEth > 0n ? Number((noEth * 10000n) / totalEth) / 100 : 50;
+
+          quests.push({
+            id: Number(q[0]),
+            creator: q[1],
+            keywordHash: q[2],
+            sourceUrl: q[3],
+            windowStart: Number(q[4]),
+            windowEnd: Number(q[5]),
+            createdAt: Number(q[6]),
+            status: STATUS_LABELS[Number(q[7])] || "unknown",
+            outcome: OUTCOME_LABELS[Number(q[8])] || "unknown",
+            stakes: {
+              yesRep: s[0].toString(),
+              noRep: s[1].toString(),
+              yesEth: s[2].toString(),
+              noEth: s[3].toString(),
+            },
+            odds: { yes: yesOdds, no: noOdds },
+          });
+        } catch {
+          // Skip quests that fail to load
+        }
+      }
+
+      this.questCache = quests;
+      this.questCacheTime = Date.now();
+    } catch (error) {
+      this.logError("Failed to refresh quest cache:", error);
+    }
+  }
+
+  // ─── RSS Checking ──────────────────────────────────────────────
 
   /**
    * Fetch RSS feed and check for keyword
@@ -122,7 +319,9 @@ class MentionFiOracle {
 
       for (const item of feed.items || []) {
         // Check if item is within time window
-        const pubDate = item.pubDate ? new Date(item.pubDate).getTime() / 1000 : 0;
+        const pubDate = item.pubDate
+          ? new Date(item.pubDate).getTime() / 1000
+          : 0;
 
         // Be lenient with time - check items from slightly before window
         if (pubDate < windowStart - 3600 || pubDate > windowEnd + 60) {
@@ -140,7 +339,9 @@ class MentionFiOracle {
           if (hash === keywordHash && text.includes(keyword.toLowerCase())) {
             this.log(`Found keyword "${keyword}" in: ${item.title}`);
             const proof = ethers.keccak256(
-              ethers.toUtf8Bytes(JSON.stringify({ url: item.link, title: item.title }))
+              ethers.toUtf8Bytes(
+                JSON.stringify({ url: item.link, title: item.title })
+              )
             );
             return { found: true, proof, matchedItem: item.title };
           }
@@ -191,7 +392,8 @@ class MentionFiOracle {
 
         // Check if quest needs resolution (window ended, still open/closed)
         if (
-          (quest.status === QuestStatus.Open || quest.status === QuestStatus.Closed) &&
+          (quest.status === QuestStatus.Open ||
+            quest.status === QuestStatus.Closed) &&
           Number(quest.windowEnd) <= now
         ) {
           pending.push(quest);
@@ -210,7 +412,9 @@ class MentionFiOracle {
   async resolveQuest(quest: Quest): Promise<boolean> {
     this.log(`Resolving quest #${quest.id}`);
     this.log(`  Source: ${quest.sourceUrl}`);
-    this.log(`  Window: ${new Date(Number(quest.windowStart) * 1000).toISOString()} - ${new Date(Number(quest.windowEnd) * 1000).toISOString()}`);
+    this.log(
+      `  Window: ${new Date(Number(quest.windowStart) * 1000).toISOString()} - ${new Date(Number(quest.windowEnd) * 1000).toISOString()}`
+    );
 
     // Check RSS for keyword
     const { found, proof, matchedItem } = await this.checkRSSForKeyword(
@@ -221,10 +425,16 @@ class MentionFiOracle {
     );
 
     const outcome = found ? Position.Yes : Position.No;
-    this.log(`  Result: ${found ? `YES - "${matchedItem}"` : "NO (keyword not found)"}`);
+    this.log(
+      `  Result: ${found ? `YES - "${matchedItem}"` : "NO (keyword not found)"}`
+    );
 
     try {
-      const tx = await this.questContract.resolveQuest(quest.id, outcome, proof);
+      const tx = await this.questContract.resolveQuest(
+        quest.id,
+        outcome,
+        proof
+      );
       this.log(`  TX sent: ${tx.hash}`);
 
       const receipt = await tx.wait();
@@ -233,7 +443,10 @@ class MentionFiOracle {
       return true;
     } catch (error: any) {
       // Check if already resolved
-      if (error.message?.includes("QuestNotClosed") || error.message?.includes("already")) {
+      if (
+        error.message?.includes("QuestNotClosed") ||
+        error.message?.includes("already")
+      ) {
         this.log(`  Quest already resolved or invalid state`);
         return false;
       }
@@ -252,6 +465,9 @@ class MentionFiOracle {
     const tick = async () => {
       this.stats.lastCheck = new Date();
       try {
+        // Refresh quest cache on every tick (powers the API)
+        await this.refreshQuestCache();
+
         const pending = await this.getPendingQuests();
         this.stats.pendingQuests = pending.length;
 
@@ -260,7 +476,7 @@ class MentionFiOracle {
           for (const quest of pending) {
             await this.resolveQuest(quest);
             // Small delay between resolutions
-            await new Promise(r => setTimeout(r, 1000));
+            await new Promise((r) => setTimeout(r, 1000));
           }
         }
       } catch (error) {
@@ -276,34 +492,161 @@ class MentionFiOracle {
   }
 }
 
-// Health check HTTP server for Railway
-function startHealthServer(oracle: MentionFiOracle, port: number) {
-  const server = http.createServer((req, res) => {
-    if (req.url === '/health' || req.url === '/') {
-      const stats = oracle.getStats();
-      const uptime = Math.floor((Date.now() - stats.startTime.getTime()) / 1000);
+// ─── JSON-LD Response Helper ───────────────────────────────────
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        status: 'healthy',
-        uptime: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
-        questsResolved: stats.questsResolved,
-        lastCheck: stats.lastCheck?.toISOString() || null,
-        pendingQuests: stats.pendingQuests,
-        errors: stats.errors,
-      }));
-    } else if (req.url === '/stats') {
-      const stats = oracle.getStats();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(stats));
-    } else {
-      res.writeHead(404);
-      res.end('Not found');
+function jsonLD(data: unknown, meta?: Record<string, unknown>) {
+  return JSON.stringify({
+    "@context": "https://mentionfi.vercel.app/schema/v1",
+    success: true,
+    data,
+    meta: {
+      source: "mentionfi-oracle",
+      chain: "megaeth-testnet",
+      chainId: 6343,
+      timestamp: new Date().toISOString(),
+      ...meta,
+    },
+  });
+}
+
+function jsonError(message: string, status: number = 400) {
+  return {
+    status,
+    body: JSON.stringify({
+      "@context": "https://mentionfi.vercel.app/schema/v1",
+      success: false,
+      error: message,
+      meta: {
+        source: "mentionfi-oracle",
+        timestamp: new Date().toISOString(),
+      },
+    }),
+  };
+}
+
+// ─── HTTP Server with API Routes ─────────────────────────────
+
+function startServer(oracle: MentionFiOracle, port: number) {
+  const server = http.createServer(async (req, res) => {
+    // CORS headers on all responses
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+
+    // Handle preflight
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    const url = new URL(req.url || "/", `http://localhost:${port}`);
+    const path = url.pathname;
+
+    try {
+      // ─── Health ────────────────────────────────────────────
+      if (path === "/health" || path === "/") {
+        const stats = oracle.getStats();
+        const uptime = Math.floor(
+          (Date.now() - stats.startTime.getTime()) / 1000
+        );
+        res.writeHead(200);
+        res.end(
+          JSON.stringify({
+            status: "healthy",
+            uptime: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
+            questsResolved: stats.questsResolved,
+            lastCheck: stats.lastCheck?.toISOString() || null,
+            pendingQuests: stats.pendingQuests,
+            errors: stats.errors,
+          })
+        );
+        return;
+      }
+
+      // ─── API v1: List Quests ───────────────────────────────
+      if (path === "/api/v1/quests") {
+        const limit = parseInt(url.searchParams.get("limit") || "30");
+        const quests = await oracle.getAllQuests(
+          Math.min(limit, 100)
+        );
+        res.writeHead(200);
+        res.end(jsonLD(quests, { count: quests.length }));
+        return;
+      }
+
+      // ─── API v1: Quest Detail ──────────────────────────────
+      const questMatch = path.match(/^\/api\/v1\/quests\/(\d+)$/);
+      if (questMatch) {
+        const id = parseInt(questMatch[1]);
+        const quest = await oracle.getQuestDetail(id);
+        if (!quest) {
+          const err = jsonError(`Quest ${id} not found`, 404);
+          res.writeHead(err.status);
+          res.end(err.body);
+          return;
+        }
+        res.writeHead(200);
+        res.end(jsonLD(quest));
+        return;
+      }
+
+      // ─── API v1: Feeds ────────────────────────────────────
+      if (path === "/api/v1/feeds") {
+        const feeds = oracle.getFeeds();
+        res.writeHead(200);
+        res.end(jsonLD(feeds, { count: feeds.length }));
+        return;
+      }
+
+      // ─── API v1: Protocol Stats ───────────────────────────
+      if (path === "/api/v1/stats") {
+        const stats = await oracle.getProtocolStats();
+        res.writeHead(200);
+        res.end(jsonLD(stats));
+        return;
+      }
+
+      // ─── API v1: Agent Profile ────────────────────────────
+      const agentMatch = path.match(
+        /^\/api\/v1\/agent\/(0x[a-fA-F0-9]{40})$/
+      );
+      if (agentMatch) {
+        const address = agentMatch[1];
+        const profile = await oracle.getAgentProfile(address);
+        if (!profile) {
+          const err = jsonError("Agent not found", 404);
+          res.writeHead(err.status);
+          res.end(err.body);
+          return;
+        }
+        res.writeHead(200);
+        res.end(jsonLD(profile));
+        return;
+      }
+
+      // ─── 404 ──────────────────────────────────────────────
+      const err = jsonError("Not found. Try /api/v1/quests, /api/v1/feeds, /api/v1/stats, /api/v1/agent/:address", 404);
+      res.writeHead(err.status);
+      res.end(err.body);
+    } catch (error: any) {
+      const err = jsonError(error.message || "Internal server error", 500);
+      res.writeHead(err.status);
+      res.end(err.body);
     }
   });
 
   server.listen(port, () => {
-    console.log(`[${new Date().toISOString()}] Health server running on port ${port}`);
+    console.log(
+      `[${new Date().toISOString()}] API server running on port ${port}`
+    );
+    console.log(`  GET /health`);
+    console.log(`  GET /api/v1/quests`);
+    console.log(`  GET /api/v1/quests/:id`);
+    console.log(`  GET /api/v1/feeds`);
+    console.log(`  GET /api/v1/stats`);
+    console.log(`  GET /api/v1/agent/:address`);
   });
 
   return server;
@@ -312,34 +655,65 @@ function startHealthServer(oracle: MentionFiOracle, port: number) {
 // Common keywords to track
 const DEFAULT_KEYWORDS = [
   // Crypto
-  "bitcoin", "ethereum", "solana", "xrp", "defi", "nft", "stablecoin",
-  "binance", "coinbase", "sec", "etf",
+  "bitcoin",
+  "ethereum",
+  "solana",
+  "xrp",
+  "defi",
+  "nft",
+  "stablecoin",
+  "binance",
+  "coinbase",
+  "sec",
+  "etf",
   // AI
-  "deepseek", "openai", "anthropic", "chatgpt", "claude", "ai", "llm", "gpt",
+  "deepseek",
+  "openai",
+  "anthropic",
+  "chatgpt",
+  "claude",
+  "ai",
+  "llm",
+  "gpt",
   // Markets
-  "fed", "inflation", "nasdaq", "recession", "tariff",
+  "fed",
+  "inflation",
+  "nasdaq",
+  "recession",
+  "tariff",
   // Politics
-  "trump", "musk", "china", "russia", "ukraine",
+  "trump",
+  "musk",
+  "china",
+  "russia",
+  "ukraine",
   // Tech
-  "apple", "google", "microsoft", "meta", "nvidia",
+  "apple",
+  "google",
+  "microsoft",
+  "meta",
+  "nvidia",
   // MegaETH specific
-  "megaeth", "mega",
+  "megaeth",
+  "mega",
 ];
 
 // Main
 async function main() {
   console.log(`
 ╔══════════════════════════════════════════╗
-║       MENTIONFI ORACLE v1.0              ║
+║       MENTIONFI ORACLE v2.0              ║
 ║   Information Prediction Market Oracle   ║
+║   + APIPOOL-Compatible API               ║
 ╚══════════════════════════════════════════╝
   `);
 
   const rpc = process.env.RPC_URL || MEGAETH_TESTNET_RPC;
   const privateKey = process.env.PRIVATE_KEY;
   const questAddress = process.env.QUEST_ADDRESS;
-  const port = parseInt(process.env.PORT || '3000');
-  const interval = parseInt(process.env.INTERVAL_MS || '30000');
+  const repAddress = process.env.REP_ADDRESS;
+  const port = parseInt(process.env.PORT || "3000");
+  const interval = parseInt(process.env.INTERVAL_MS || "30000");
 
   if (!privateKey) {
     console.error("ERROR: PRIVATE_KEY env required");
@@ -350,7 +724,7 @@ async function main() {
     process.exit(1);
   }
 
-  const oracle = new MentionFiOracle(rpc, privateKey, questAddress);
+  const oracle = new MentionFiOracle(rpc, privateKey, questAddress, repAddress);
 
   // Register default keywords
   for (const keyword of DEFAULT_KEYWORDS) {
@@ -358,13 +732,16 @@ async function main() {
   }
 
   // Register custom keywords from env
-  const customKeywords = process.env.KEYWORDS?.split(',').map(k => k.trim()).filter(Boolean) || [];
+  const customKeywords =
+    process.env.KEYWORDS?.split(",")
+      .map((k) => k.trim())
+      .filter(Boolean) || [];
   for (const keyword of customKeywords) {
     oracle.registerKeyword(keyword);
   }
 
-  // Start health server
-  startHealthServer(oracle, port);
+  // Start API server (replaces old health-only server)
+  startServer(oracle, port);
 
   // Start oracle loop
   await oracle.run(interval);

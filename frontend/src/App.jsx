@@ -4,7 +4,7 @@ import { privyConfig, megaethTestnet } from './privy-config';
 import { ethers } from 'ethers';
 import RogueASCIIBg from './RogueASCIIBg';
 
-const PRIVY_APP_ID = 'cml9c6av801zil40dnl2gqnhj';
+const PRIVY_APP_ID = 'cmlcigd1f01b9jm0du28i2jpx';
 
 const REP_TOKEN_ADDRESS = '0x1665f75aD523803E4F17dB5D4DEa4a5F72C8B53b';
 const QUEST_ADDRESS = '0x4e5c8a5B099260d7c7858eE62E55D03a9015e39c';
