@@ -83,6 +83,7 @@ function MentionFiDashboard() {
   const [newQuest, setNewQuest] = useState({ keyword: '', sourceUrl: RSS_FEEDS[0].url, duration: 3600 });
   const [stakeAmount, setStakeAmount] = useState('0.001');
   const [oracleBalance, setOracleBalance] = useState(null);
+  const [userPositions, setUserPositions] = useState({});
 
   const activeWallet = wallets?.[0];
 
@@ -128,6 +129,17 @@ function MentionFiDashboard() {
           const repBalance = await repContract.balanceOf(activeWallet.address, 0);
           setUserRep(ethers.formatEther(repBalance));
         }
+        // Track user's existing positions to prevent double-betting
+        const positions = {};
+        for (const q of questList) {
+          try {
+            const claim = await questContract.claims(q.id, activeWallet.address);
+            if (Number(claim.position) !== 0) {
+              positions[q.id] = { position: Number(claim.position), repStake: ethers.formatEther(claim.repStake), ethStake: ethers.formatEther(claim.ethStake) };
+            }
+          } catch (e) { /* skip */ }
+        }
+        setUserPositions(positions);
       }
     } catch (e) {
       console.error('Failed to fetch data:', e);
@@ -236,8 +248,8 @@ function MentionFiDashboard() {
               <span style={st.badge}>MegaETH</span>
               <span style={{ ...st.badge, borderColor: C.yes, color: C.yes }}>TESTNET</span>
             </div>
-            <p style={{ color: C.text2, marginTop: '16px', fontSize: '15px', maxWidth: '500px', margin: '16px auto 0' }}>
-              Bet on what gets mentioned next. Pick a keyword. Choose an RSS feed. Stake REP + ETH on whether it appears. Oracle resolves. Winners take the pool.
+            <p style={{ color: C.text2, marginTop: '16px', fontSize: '15px', maxWidth: '520px', margin: '16px auto 0' }}>
+              Prediction market for news mentions. Pick a keyword, choose a feed, bet YES or NO on whether it appears. Oracle checks every 30s. Winners take the pool.
             </p>
           </div>
 
@@ -298,18 +310,23 @@ function MentionFiDashboard() {
             {/* Stats row */}
             <div style={{ display: 'flex', gap: '12px', marginBottom: '24px', flexWrap: 'wrap' }}>
               <StatBox label="Your REP" value={parseFloat(userRep || 0).toFixed(0)} color={C.yes} />
-              <StatBox label="Active" value={activeQuests.length} color={C.info} />
+              <StatBox label="Live Quests" value={activeQuests.length} color={C.info} />
               <StatBox label="Resolved" value={resolvedQuests.length} />
-              <StatBox label="Total Quests" value={quests.length} />
-              <StatBox label="ETH Staked" value={totalEthStaked.toFixed(3)} color={C.warn} />
-              <StatBox label="Oracle" value={oracleBalance ? `${oracleBalance} ETH` : '...'} color={C.info} />
+              <StatBox label="Total Pool" value={`${totalEthStaked.toFixed(3)} ETH`} color={C.warn} />
+              <StatBox label="Oracle Fund" value={oracleBalance ? `${oracleBalance} ETH` : '...'} color={C.text2} />
             </div>
 
             {/* Navigation tabs */}
             <div style={{ display: 'flex', gap: '4px', marginBottom: '20px', flexWrap: 'wrap' }}>
-              {['dashboard', 'create', 'portfolio', 'oracle'].map(t => (
-                <button key={t} onClick={() => setView(t)} style={view === t ? st.tabActive : st.tab}>
-                  {t === 'dashboard' ? 'QUESTS' : t === 'create' ? '+ CREATE' : t === 'portfolio' ? 'PORTFOLIO' : 'ORACLE'}
+              {[
+                { key: 'dashboard', label: 'QUESTS' },
+                { key: 'create', label: '+ CREATE' },
+                { key: 'portfolio', label: 'MY BETS' },
+                { key: 'howto', label: 'HOW TO PLAY' },
+                { key: 'oracle', label: 'ORACLE' },
+              ].map(t => (
+                <button key={t.key} onClick={() => setView(t.key)} style={view === t.key ? st.tabActive : st.tab}>
+                  {t.label}
                 </button>
               ))}
             </div>
@@ -329,7 +346,7 @@ function MentionFiDashboard() {
                         {activeQuests.map(q => (
                           <QuestCard key={q.id} quest={q} fmtTime={fmtTime} fmtFeed={fmtFeed}
                             onBet={handleBet} stakeAmount={stakeAmount} setStakeAmount={setStakeAmount}
-                            loading={loading} />
+                            loading={loading} userPosition={userPositions[q.id]} />
                         ))}
                       </>
                     )}
@@ -387,21 +404,110 @@ function MentionFiDashboard() {
               </div>
             )}
 
-            {/* Portfolio view */}
+            {/* My Bets view */}
             {view === 'portfolio' && (
               <div style={{ width: '100%' }}>
                 <div style={st.glass}>
-                  <h3 style={{ color: C.text1, fontSize: '14px', margin: '0 0 16px' }}>YOUR STATS</h3>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '16px' }}>
+                  <h3 style={{ color: C.text1, fontSize: '14px', margin: '0 0 16px' }}>YOUR POSITIONS</h3>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '16px', marginBottom: '20px' }}>
                     <div><div style={{ color: C.yes, fontSize: '24px', fontWeight: '700' }}>{parseFloat(userRep || 0).toFixed(0)}</div><div style={{ color: C.text3, fontSize: '11px' }}>REP Balance</div></div>
                     <div><div style={{ color: C.text1, fontSize: '24px', fontWeight: '700' }}>{quests.filter(q => q.creator === activeWallet?.address).length}</div><div style={{ color: C.text3, fontSize: '11px' }}>Quests Created</div></div>
-                    <div><div style={{ color: C.info, fontSize: '24px', fontWeight: '700' }}>--</div><div style={{ color: C.text3, fontSize: '11px' }}>Bets Placed</div></div>
-                    <div><div style={{ color: C.warn, fontSize: '24px', fontWeight: '700' }}>--</div><div style={{ color: C.text3, fontSize: '11px' }}>Win Rate</div></div>
+                    <div><div style={{ color: C.info, fontSize: '24px', fontWeight: '700' }}>{Object.keys(userPositions).length}</div><div style={{ color: C.text3, fontSize: '11px' }}>Active Bets</div></div>
+                    <div><div style={{ color: C.warn, fontSize: '24px', fontWeight: '700' }}>{Object.values(userPositions).reduce((s, p) => s + parseFloat(p.ethStake), 0).toFixed(3)}</div><div style={{ color: C.text3, fontSize: '11px' }}>ETH at Risk</div></div>
+                  </div>
+                  {Object.keys(userPositions).length > 0 ? (
+                    <div style={{ display: 'grid', gap: '8px' }}>
+                      {Object.entries(userPositions).map(([qId, pos]) => {
+                        const q = quests.find(x => x.id === Number(qId));
+                        if (!q) return null;
+                        return (
+                          <div key={qId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', background: C.bg, borderRadius: '8px', border: `1px solid ${C.border}` }}>
+                            <div>
+                              <span style={{ color: C.text1, fontSize: '13px', fontWeight: '600' }}>Quest #{qId}</span>
+                              <span style={{ color: C.text3, fontSize: '11px', marginLeft: '8px' }}>{fmtFeed(q.sourceUrl)}</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                              <span style={{ color: pos.position === 1 ? C.yes : C.no, fontSize: '12px', fontWeight: '700' }}>
+                                {pos.position === 1 ? 'YES' : 'NO'}
+                              </span>
+                              <span style={{ color: C.text2, fontSize: '11px' }}>{parseFloat(pos.ethStake).toFixed(3)} ETH</span>
+                              <span style={{ color: C.text3, fontSize: '11px' }}>{fmtTime(q.windowEnd)}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p style={{ color: C.text3, fontSize: '12px', textAlign: 'center', margin: '12px 0 0' }}>No active bets yet. Go to Quests and place your first bet.</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* How to Play view */}
+            {view === 'howto' && (
+              <div style={{ width: '100%' }}>
+                <div style={st.glass}>
+                  <h3 style={{ color: C.yes, fontSize: '16px', margin: '0 0 16px', letterSpacing: '1px' }}>HOW TO PLAY</h3>
+                  <p style={{ color: C.text2, fontSize: '13px', lineHeight: '1.6', margin: '0 0 20px' }}>
+                    MentionFi is a <span style={{ color: C.text1 }}>keyword prediction market</span>. You bet on whether a specific word will appear in RSS news feeds within a time window. The oracle checks feeds every 30 seconds and resolves quests automatically.
+                  </p>
+
+                  <h4 style={st.guideHeading}>1. REGISTER</h4>
+                  <p style={st.guidePara}>Connect your wallet and register to receive <span style={{ color: C.yes }}>100 REP tokens</span>. REP is your reputation — you stake it alongside ETH on every bet. Lose and your REP decreases. Win and it grows.</p>
+
+                  <h4 style={st.guideHeading}>2. CREATE A QUEST</h4>
+                  <p style={st.guidePara}>Pick any keyword (e.g. "bitcoin", "trump", "deepseek") + an RSS feed source + a time window (1 hour to 7 days). The question becomes: <em>will this keyword appear in that feed before time runs out?</em></p>
+
+                  <h4 style={st.guideHeading}>3. PLACE YOUR BET</h4>
+                  <p style={st.guidePara}>Choose <span style={{ color: C.yes }}>YES</span> (keyword will appear) or <span style={{ color: C.no }}>NO</span> (it won't). Stake ETH (min 0.001) + 10 REP. <span style={{ color: C.warn }}>You can only bet one side per quest</span> — no hedging allowed.</p>
+
+                  <h4 style={st.guideHeading}>4. ORACLE RESOLVES</h4>
+                  <p style={st.guidePara}>The oracle scans all RSS feeds every 30 seconds. If the keyword appears before the window closes → YES wins. If the window ends with no mention → NO wins. Fully automated, no human intervention.</p>
+
+                  <h4 style={st.guideHeading}>5. COLLECT WINNINGS</h4>
+                  <p style={st.guidePara}>Winners split the losing side's ETH pool proportionally. Go to My Bets → click CLAIM on resolved quests.</p>
+                </div>
+
+                <div style={st.glass}>
+                  <h3 style={{ color: C.warn, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>GAME THEORY</h3>
+
+                  <div style={{ marginBottom: '16px' }}>
+                    <h4 style={st.guideHeading}>Fee Structure</h4>
+                    <p style={st.guidePara}><span style={{ color: C.text1 }}>5%</span> protocol fee + <span style={{ color: C.text1 }}>5%</span> quest creator reward from the losing pool. The remaining 90% goes to winners.</p>
+                  </div>
+
+                  <div style={{ marginBottom: '16px' }}>
+                    <h4 style={st.guideHeading}>Odds & Payouts</h4>
+                    <p style={st.guidePara}>Odds are set by the market — the ratio of YES vs NO stakes. If 0.1 ETH is on YES and 0.9 ETH is on NO, YES bettors get 10:1 payout if they win. Early contrarian bets pay the most.</p>
+                  </div>
+
+                  <div style={{ marginBottom: '16px' }}>
+                    <h4 style={st.guideHeading}>Strategy Tips</h4>
+                    <ul style={{ color: C.text2, fontSize: '12px', lineHeight: '1.8', paddingLeft: '16px', margin: '4px 0' }}>
+                      <li>Bet YES on trending topics about to break into mainstream news</li>
+                      <li>Bet NO on obscure keywords with short time windows</li>
+                      <li>Check feed tiers — S-tier feeds (CoinDesk, HN) update every 2-5 min</li>
+                      <li>Create quests on topics you have information edge on</li>
+                      <li>Quest creators earn 5% of the losing pool — create popular quests</li>
+                    </ul>
+                  </div>
+
+                  <div>
+                    <h4 style={st.guideHeading}>REP System (EIP-6909)</h4>
+                    <p style={st.guidePara}>REP is a multi-token reputation score. You start with 100. Every bet costs 10 REP. Win → you get more back. Lose → you lose it. High REP = proven track record. REP is non-transferable and soulbound.</p>
                   </div>
                 </div>
-                <p style={{ color: C.text3, fontSize: '12px', textAlign: 'center', marginTop: '24px' }}>
-                  Detailed position tracking coming soon. Create quests and place bets to build your track record.
-                </p>
+
+                <div style={st.glass}>
+                  <h3 style={{ color: C.info, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>FEED TIERS</h3>
+                  <p style={st.guidePara}>Not all feeds are equal. Higher tier = faster updates = more likely to trigger YES outcomes quickly.</p>
+                  <div style={{ display: 'grid', gap: '6px', marginTop: '12px' }}>
+                    <div style={st.tierRow}><span style={{ color: C.yes, fontWeight: '700' }}>S-TIER</span><span style={{ color: C.text2 }}>CoinDesk, Cointelegraph, CNBC, HN — updates every 2-5 min</span></div>
+                    <div style={st.tierRow}><span style={{ color: C.info, fontWeight: '700' }}>A-TIER</span><span style={{ color: C.text2 }}>TechCrunch, CryptoSlate, Yahoo — updates every 5-15 min</span></div>
+                    <div style={st.tierRow}><span style={{ color: C.text2, fontWeight: '700' }}>B-TIER</span><span style={{ color: C.text3 }}>CryptoPotato, CryptoNews — updates every 5-30 min</span></div>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -417,7 +523,7 @@ function MentionFiDashboard() {
                     </div>
                     <div>
                       <div style={{ color: C.text1, fontSize: '14px', fontWeight: '600' }}>{oracleBalance || '...'} ETH</div>
-                      <div style={{ color: C.text3, fontSize: '11px' }}>Oracle Wallet</div>
+                      <div style={{ color: C.text3, fontSize: '11px' }}>Oracle Fund (Gas)</div>
                     </div>
                     <div>
                       <div style={{ color: C.text1, fontSize: '14px', fontWeight: '600' }}>{resolvedQuests.length}</div>
@@ -471,14 +577,15 @@ function MentionFiDashboard() {
 }
 
 // Quest Card Component
-function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setStakeAmount, loading }) {
+function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setStakeAmount, loading, userPosition }) {
   const isActive = quest.status === 0;
   const isResolved = quest.status === 2;
   const yesPercent = quest.yesOdds + quest.noOdds > 0 ? quest.yesOdds : 50;
   const noPercent = quest.yesOdds + quest.noOdds > 0 ? quest.noOdds : 50;
+  const hasBet = !!userPosition;
 
   return (
-    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '12px', padding: '16px', marginBottom: '10px', position: 'relative', zIndex: 2, backdropFilter: 'blur(8px)' }}>
+    <div style={{ background: C.surface, border: `1px solid ${hasBet ? (userPosition.position === 1 ? C.yes : C.no) + '44' : C.border}`, borderRadius: '12px', padding: '16px', marginBottom: '10px', position: 'relative', zIndex: 2, backdropFilter: 'blur(8px)' }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -487,13 +594,25 @@ function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setSt
             {fmtFeed(quest.sourceUrl)}
           </span>
         </div>
-        <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px',
-          background: isActive ? `${C.yes}22` : isResolved ? `${C.text3}22` : `${C.warn}22`,
-          color: isActive ? C.yes : isResolved ? C.text2 : C.warn,
-          border: `1px solid ${isActive ? C.yes : isResolved ? C.text3 : C.warn}44`
-        }}>
-          {QuestStatus[quest.status]}
-        </span>
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          {hasBet && (
+            <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '4px',
+              background: userPosition.position === 1 ? `${C.yes}22` : `${C.no}22`,
+              color: userPosition.position === 1 ? C.yes : C.no,
+              border: `1px solid ${userPosition.position === 1 ? C.yes : C.no}44`,
+              fontWeight: '700'
+            }}>
+              YOUR BET: {userPosition.position === 1 ? 'YES' : 'NO'} ({parseFloat(userPosition.ethStake).toFixed(3)} ETH)
+            </span>
+          )}
+          <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px',
+            background: isActive ? `${C.yes}22` : isResolved ? `${C.text3}22` : `${C.warn}22`,
+            color: isActive ? C.yes : isResolved ? C.text2 : C.warn,
+            border: `1px solid ${isActive ? C.yes : isResolved ? C.text3 : C.warn}44`
+          }}>
+            {QuestStatus[quest.status]}
+          </span>
+        </div>
       </div>
 
       {/* Probability bar */}
@@ -513,8 +632,8 @@ function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setSt
         <span style={{ color: isActive ? C.warn : C.text3 }}>{fmtTime(quest.windowEnd)}</span>
       </div>
 
-      {/* Bet buttons */}
-      {onBet && isActive && (
+      {/* Bet buttons or position indicator */}
+      {onBet && isActive && !hasBet && (
         <div>
           <div style={{ display: 'flex', gap: '4px', marginBottom: '8px', flexWrap: 'wrap' }}>
             {STAKE_PRESETS.map(amt => (
@@ -534,6 +653,13 @@ function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setSt
               NO
             </button>
           </div>
+        </div>
+      )}
+      {onBet && isActive && hasBet && (
+        <div style={{ padding: '8px 12px', background: `${userPosition.position === 1 ? C.yes : C.no}11`, borderRadius: '6px', border: `1px solid ${userPosition.position === 1 ? C.yes : C.no}33`, textAlign: 'center' }}>
+          <span style={{ color: userPosition.position === 1 ? C.yes : C.no, fontSize: '12px', fontWeight: '600' }}>
+            Position locked: {userPosition.position === 1 ? 'YES' : 'NO'} — {parseFloat(userPosition.ethStake).toFixed(3)} ETH + {parseFloat(userPosition.repStake).toFixed(0)} REP
+          </span>
         </div>
       )}
 
@@ -618,6 +744,15 @@ const st = {
   },
   chip: {
     background: 'transparent', border: `1px solid ${C.border}`, color: C.text2, padding: '5px 12px', cursor: 'pointer', fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', borderRadius: '20px', transition: 'all 0.2s',
+  },
+  guideHeading: {
+    color: C.text1, fontSize: '12px', letterSpacing: '1px', margin: '0 0 6px', textTransform: 'uppercase',
+  },
+  guidePara: {
+    color: C.text2, fontSize: '12px', lineHeight: '1.7', margin: '0 0 12px',
+  },
+  tierRow: {
+    display: 'flex', gap: '12px', alignItems: 'center', padding: '8px 12px', background: C.bg, borderRadius: '6px', border: `1px solid ${C.border}`, fontSize: '11px',
   },
 };
 
