@@ -9,6 +9,7 @@ const PRIVY_APP_ID = 'cmlcigd1f01b9jm0du28i2jpx';
 const REP_TOKEN_ADDRESS = '0x1665f75aD523803E4F17dB5D4DEa4a5F72C8B53b';
 const QUEST_ADDRESS = '0x4e5c8a5B099260d7c7858eE62E55D03a9015e39c';
 const RPC_URL = 'https://carrot.megaeth.com/rpc';
+const ORACLE_API = 'https://oracle-production-aa8f.up.railway.app';
 
 const REP_TOKEN_ABI = [
   'function register() external',
@@ -54,6 +55,23 @@ const DURATION_PRESETS = [
 
 const STAKE_PRESETS = ['0.001', '0.01', '0.05', '0.1'];
 
+// Known keywords — compute hashes client-side for display (no oracle dependency)
+const KNOWN_KEYWORDS = [
+  'bitcoin', 'ethereum', 'solana', 'xrp', 'defi', 'nft', 'stablecoin', 'binance', 'coinbase', 'sec', 'etf',
+  'deepseek', 'openai', 'anthropic', 'chatgpt', 'claude', 'ai', 'llm', 'gpt',
+  'fed', 'inflation', 'nasdaq', 'recession', 'tariff',
+  'trump', 'musk', 'china', 'russia', 'ukraine',
+  'apple', 'google', 'microsoft', 'meta', 'nvidia', 'megaeth', 'mega',
+  'war', 'hack', 'exploit', 'regulation', 'bull', 'bear', 'crash', 'pump', 'dump',
+  'tesla', 'amazon', 'tiktok', 'spacex', 'blackrock', 'vitalik', 'saylor',
+];
+
+// Build hash→keyword lookup at module load (pure client-side, no API needed)
+const KEYWORD_HASH_MAP = {};
+for (const kw of KNOWN_KEYWORDS) {
+  KEYWORD_HASH_MAP[ethers.keccak256(ethers.toUtf8Bytes(kw))] = kw;
+}
+
 // Colors from UX research
 const C = {
   bg: '#0A0A0F',
@@ -82,11 +100,32 @@ function MentionFiDashboard() {
   const [stakeAmount, setStakeAmount] = useState('0.001');
   const [oracleBalance, setOracleBalance] = useState(null);
   const [userPositions, setUserPositions] = useState({});
+  const [keywordMap, setKeywordMap] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('mentionfi_keywords') || '{}');
+      return { ...KEYWORD_HASH_MAP, ...stored };
+    } catch { return { ...KEYWORD_HASH_MAP }; }
+  });
 
   const activeWallet = wallets?.[0];
 
   const fetchData = useCallback(async () => {
     try {
+      // Supplement keyword map from oracle (catches custom keywords from other users)
+      try {
+        const kwRes = await fetch(`${ORACLE_API}/api/v1/keywords`);
+        if (kwRes.ok) {
+          const kwJson = await kwRes.json();
+          if (kwJson.success && kwJson.data) {
+            setKeywordMap(prev => {
+              const merged = { ...prev, ...kwJson.data };
+              localStorage.setItem('mentionfi_keywords', JSON.stringify(merged));
+              return merged;
+            });
+          }
+        }
+      } catch (e) { /* oracle unreachable — built-in keyword list still works */ }
+
       const provider = new ethers.JsonRpcProvider(RPC_URL);
       const questContract = new ethers.Contract(QUEST_ADDRESS, QUEST_ABI, provider);
       const repContract = new ethers.Contract(REP_TOKEN_ADDRESS, REP_TOKEN_ABI, provider);
@@ -187,6 +226,11 @@ function MentionFiDashboard() {
       const now = Math.floor(Date.now() / 1000);
       const tx = await contract.createQuest(newQuest.keyword, newQuest.sourceUrl, now + 10, now + newQuest.duration);
       await tx.wait();
+      // Store keyword hash mapping for display (works even if oracle is down)
+      const hash = ethers.keccak256(ethers.toUtf8Bytes(newQuest.keyword));
+      const updated = { ...keywordMap, [hash]: newQuest.keyword.toLowerCase() };
+      setKeywordMap(updated);
+      localStorage.setItem('mentionfi_keywords', JSON.stringify(updated));
       setNewQuest({ keyword: '', sourceUrl: RSS_FEEDS[0].url, duration: 3600 });
       setView('dashboard');
       fetchData();
@@ -300,7 +344,7 @@ function MentionFiDashboard() {
           {activeQuests.length > 0 && (
             <div style={{ marginTop: '32px', width: '100%', maxWidth: '700px' }}>
               <h3 style={{ color: C.text2, fontSize: '12px', letterSpacing: '1px', marginBottom: '12px' }}>LIVE QUESTS</h3>
-              {activeQuests.slice(0, 3).map(q => <QuestCard key={q.id} quest={q} fmtTime={fmtTime} fmtFeed={fmtFeed} />)}
+              {activeQuests.slice(0, 3).map(q => <QuestCard key={q.id} quest={q} fmtTime={fmtTime} fmtFeed={fmtFeed} keywordMap={keywordMap} />)}
             </div>
           )}
         </div>
@@ -376,7 +420,7 @@ function MentionFiDashboard() {
                         {activeQuests.map(q => (
                           <QuestCard key={q.id} quest={q} fmtTime={fmtTime} fmtFeed={fmtFeed}
                             onBet={handleBet} stakeAmount={stakeAmount} setStakeAmount={setStakeAmount}
-                            loading={loading} userPosition={userPositions[q.id]} />
+                            loading={loading} userPosition={userPositions[q.id]} keywordMap={keywordMap} />
                         ))}
                       </>
                     )}
@@ -384,7 +428,7 @@ function MentionFiDashboard() {
                       <>
                         <h3 style={{ ...st.sectionTitle, marginTop: '32px' }}>RESOLVED <span style={{ color: C.text3 }}>({resolvedQuests.length})</span></h3>
                         {resolvedQuests.slice(0, 5).map(q => (
-                          <QuestCard key={q.id} quest={q} fmtTime={fmtTime} fmtFeed={fmtFeed} onClaim={handleClaim} loading={loading} />
+                          <QuestCard key={q.id} quest={q} fmtTime={fmtTime} fmtFeed={fmtFeed} onClaim={handleClaim} loading={loading} keywordMap={keywordMap} userPosition={userPositions[q.id]} />
                         ))}
                       </>
                     )}
@@ -607,34 +651,35 @@ function MentionFiDashboard() {
 }
 
 // Quest Card Component
-function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setStakeAmount, loading, userPosition }) {
+function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setStakeAmount, loading, userPosition, keywordMap }) {
   const isActive = quest.status === 0;
   const isResolved = quest.status === 2;
   const yesPercent = quest.yesOdds + quest.noOdds > 0 ? quest.yesOdds : 50;
   const noPercent = quest.yesOdds + quest.noOdds > 0 ? quest.noOdds : 50;
   const hasBet = !!userPosition;
+  const keyword = keywordMap?.[quest.keywordHash] || null;
+  const totalPool = (parseFloat(quest.totalYesEth || 0) + parseFloat(quest.totalNoEth || 0)).toFixed(3);
 
   return (
     <div style={{ background: C.surface, border: `1px solid ${hasBet ? (userPosition.position === 1 ? C.yes : C.no) + '44' : C.border}`, borderRadius: '12px', padding: '16px', marginBottom: '10px', position: 'relative', zIndex: 2, backdropFilter: 'blur(8px)' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ color: C.text1, fontSize: '13px', fontWeight: '600' }}>Quest #{quest.id}</span>
-          <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px', background: `${C.info}22`, color: C.info, border: `1px solid ${C.info}33` }}>
-            {fmtFeed(quest.sourceUrl)}
-          </span>
-        </div>
-        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-          {hasBet && (
-            <span style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '4px',
-              background: userPosition.position === 1 ? `${C.yes}22` : `${C.no}22`,
-              color: userPosition.position === 1 ? C.yes : C.no,
-              border: `1px solid ${userPosition.position === 1 ? C.yes : C.no}44`,
-              fontWeight: '700'
-            }}>
-              YOUR BET: {userPosition.position === 1 ? 'YES' : 'NO'} ({parseFloat(userPosition.ethStake).toFixed(3)} ETH)
+      {/* Keyword + Status header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+            {keyword ? (
+              <span style={{ color: C.text1, fontSize: '20px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px' }}>"{keyword}"</span>
+            ) : (
+              <span style={{ color: C.text3, fontSize: '13px', fontFamily: 'monospace' }}>{quest.keywordHash.slice(0, 10)}...</span>
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px', background: `${C.info}22`, color: C.info, border: `1px solid ${C.info}33` }}>
+              {fmtFeed(quest.sourceUrl)}
             </span>
-          )}
+            <span style={{ color: C.text3, fontSize: '10px' }}>#{quest.id}</span>
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
           <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px',
             background: isActive ? `${C.yes}22` : isResolved ? `${C.text3}22` : `${C.warn}22`,
             color: isActive ? C.yes : isResolved ? C.text2 : C.warn,
@@ -642,11 +687,28 @@ function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setSt
           }}>
             {QuestStatus[quest.status]}
           </span>
+          <span style={{ color: isActive ? C.warn : C.text3, fontSize: '11px', fontWeight: '600' }}>{fmtTime(quest.windowEnd)}</span>
+        </div>
+      </div>
+
+      {/* Pool display — prominent */}
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+        <div style={{ flex: 1, padding: '10px 12px', background: `${C.yes}0A`, borderRadius: '8px', border: `1px solid ${C.yes}22`, textAlign: 'center' }}>
+          <div style={{ color: C.yes, fontSize: '16px', fontWeight: '700' }}>{parseFloat(quest.totalYesEth || 0).toFixed(3)}</div>
+          <div style={{ color: C.yes, fontSize: '10px', opacity: 0.7 }}>ETH on YES</div>
+        </div>
+        <div style={{ flex: 1, padding: '10px 12px', background: `${C.no}0A`, borderRadius: '8px', border: `1px solid ${C.no}22`, textAlign: 'center' }}>
+          <div style={{ color: C.no, fontSize: '16px', fontWeight: '700' }}>{parseFloat(quest.totalNoEth || 0).toFixed(3)}</div>
+          <div style={{ color: C.no, fontSize: '10px', opacity: 0.7 }}>ETH on NO</div>
+        </div>
+        <div style={{ flex: 1, padding: '10px 12px', background: `${C.warn}0A`, borderRadius: '8px', border: `1px solid ${C.warn}22`, textAlign: 'center' }}>
+          <div style={{ color: C.warn, fontSize: '16px', fontWeight: '700' }}>{totalPool}</div>
+          <div style={{ color: C.warn, fontSize: '10px', opacity: 0.7 }}>TOTAL POOL</div>
         </div>
       </div>
 
       {/* Probability bar */}
-      <div style={{ marginBottom: '12px' }}>
+      <div style={{ marginBottom: '10px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '4px' }}>
           <span style={{ color: C.yes }}>YES {yesPercent}%</span>
           <span style={{ color: C.no }}>NO {noPercent}%</span>
@@ -656,13 +718,16 @@ function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setSt
         </div>
       </div>
 
-      {/* Stakes + Time */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: C.text2, marginBottom: '10px' }}>
-        <span>{parseFloat(quest.totalYesEth).toFixed(3)} ETH yes / {parseFloat(quest.totalNoEth).toFixed(3)} ETH no</span>
-        <span style={{ color: isActive ? C.warn : C.text3 }}>{fmtTime(quest.windowEnd)}</span>
-      </div>
+      {/* Your position badge */}
+      {hasBet && (
+        <div style={{ padding: '6px 10px', marginBottom: '10px', background: `${userPosition.position === 1 ? C.yes : C.no}11`, borderRadius: '6px', border: `1px solid ${userPosition.position === 1 ? C.yes : C.no}33`, textAlign: 'center' }}>
+          <span style={{ color: userPosition.position === 1 ? C.yes : C.no, fontSize: '11px', fontWeight: '700' }}>
+            YOUR BET: {userPosition.position === 1 ? 'YES' : 'NO'} — {parseFloat(userPosition.ethStake).toFixed(3)} ETH + {parseFloat(userPosition.repStake).toFixed(0)} REP
+          </span>
+        </div>
+      )}
 
-      {/* Bet buttons or position indicator */}
+      {/* Bet buttons */}
       {onBet && isActive && !hasBet && (
         <div>
           <div style={{ display: 'flex', gap: '4px', marginBottom: '8px', flexWrap: 'wrap' }}>
@@ -685,13 +750,6 @@ function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setSt
           </div>
         </div>
       )}
-      {onBet && isActive && hasBet && (
-        <div style={{ padding: '8px 12px', background: `${userPosition.position === 1 ? C.yes : C.no}11`, borderRadius: '6px', border: `1px solid ${userPosition.position === 1 ? C.yes : C.no}33`, textAlign: 'center' }}>
-          <span style={{ color: userPosition.position === 1 ? C.yes : C.no, fontSize: '12px', fontWeight: '600' }}>
-            Position locked: {userPosition.position === 1 ? 'YES' : 'NO'} — {parseFloat(userPosition.ethStake).toFixed(3)} ETH + {parseFloat(userPosition.repStake).toFixed(0)} REP
-          </span>
-        </div>
-      )}
 
       {/* Resolution result */}
       {isResolved && (
@@ -699,7 +757,7 @@ function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setSt
           <span style={{ color: quest.outcome === 1 ? C.yes : C.no, fontSize: '13px', fontWeight: '600' }}>
             Result: {Position[quest.outcome]}
           </span>
-          {onClaim && (
+          {onClaim && hasBet && !userPosition?.claimed && (
             <button onClick={() => onClaim(quest.id)} disabled={loading}
               style={{ padding: '6px 14px', background: C.yes, border: 'none', color: C.bg, fontFamily: "'JetBrains Mono', monospace", fontWeight: '600', cursor: 'pointer', borderRadius: '4px', fontSize: '11px' }}>
               CLAIM

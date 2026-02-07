@@ -365,6 +365,17 @@ class MentionFiOracle {
   }
 
   /**
+   * Get keyword hash → keyword text mapping (for frontend display)
+   */
+  getKeywordMap(): Record<string, string> {
+    const map: Record<string, string> = {};
+    for (const [keyword, hash] of this.keywordCache.entries()) {
+      map[hash] = keyword;
+    }
+    return map;
+  }
+
+  /**
    * Get all pending quests that need resolution
    */
   async getPendingQuests(): Promise<Quest[]> {
@@ -626,8 +637,16 @@ function startServer(oracle: MentionFiOracle, port: number) {
         return;
       }
 
+      // ─── API v1: Keyword Map ────────────────────────────
+      if (path === "/api/v1/keywords") {
+        const keywords = oracle.getKeywordMap();
+        res.writeHead(200);
+        res.end(jsonLD(keywords, { count: Object.keys(keywords).length }));
+        return;
+      }
+
       // ─── 404 ──────────────────────────────────────────────
-      const err = jsonError("Not found. Try /api/v1/quests, /api/v1/feeds, /api/v1/stats, /api/v1/agent/:address", 404);
+      const err = jsonError("Not found. Try /api/v1/quests, /api/v1/feeds, /api/v1/stats, /api/v1/keywords, /api/v1/agent/:address", 404);
       res.writeHead(err.status);
       res.end(err.body);
     } catch (error: any) {
@@ -646,6 +665,7 @@ function startServer(oracle: MentionFiOracle, port: number) {
     console.log(`  GET /api/v1/quests/:id`);
     console.log(`  GET /api/v1/feeds`);
     console.log(`  GET /api/v1/stats`);
+    console.log(`  GET /api/v1/keywords`);
     console.log(`  GET /api/v1/agent/:address`);
   });
 
