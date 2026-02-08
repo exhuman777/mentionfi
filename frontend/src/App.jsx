@@ -189,6 +189,14 @@ function MentionFiDashboard() {
     return () => clearInterval(interval);
   }, [fetchData]);
 
+  // Auto-dismiss errors after 6 seconds
+  useEffect(() => {
+    if (error) {
+      const t = setTimeout(() => setError(null), 6000);
+      return () => clearTimeout(t);
+    }
+  }, [error]);
+
   const getSigner = async () => {
     await activeWallet.switchChain(megaethTestnet.id);
     const eip1193 = await activeWallet.getEthereumProvider();
@@ -522,65 +530,300 @@ function MentionFiDashboard() {
             {view === 'howto' && (
               <div style={{ width: '100%' }}>
                 <div style={st.glass}>
-                  <h3 style={{ color: C.yes, fontSize: '16px', margin: '0 0 16px', letterSpacing: '1px' }}>HOW TO PLAY</h3>
-                  <p style={{ color: C.text2, fontSize: '13px', lineHeight: '1.6', margin: '0 0 20px' }}>
-                    MentionFi is a <span style={{ color: C.text1 }}>keyword prediction market</span>. You bet on whether a specific word will appear in RSS news feeds within a time window. The oracle checks feeds every 30 seconds and resolves quests automatically.
-                  </p>
+                  <h3 style={{ color: C.yes, fontSize: '16px', margin: '0 0 16px', letterSpacing: '1px' }}>MENTION MARKETS — HOW IT WORKS</h3>
+                  <p style={st.guidePara}>MentionFi is a <span style={{ color: C.text1 }}>real-time information prediction market</span>. Players bet YES/NO on whether keywords will appear in live RSS news feeds within short time windows. An autonomous oracle resolves outcomes on-chain every 30 seconds. No human intervention. No disputes.</p>
 
-                  <h4 style={st.guideHeading}>1. REGISTER</h4>
-                  <p style={st.guidePara}>Connect your wallet and register to receive <span style={{ color: C.yes }}>100 REP tokens</span>. REP is your reputation — you stake it alongside ETH on every bet. Lose and your REP decreases. Win and it grows.</p>
+                  <div style={st.asciiBlock}>{`
+ ┌─────────────────────────────────────────────────────┐
+ │              MENTIONFI ARCHITECTURE                  │
+ │                                                     │
+ │  PLAYERS          MEGAETH          ORACLE (24/7)    │
+ │  ═══════          ═══════          ════════════     │
+ │    │                 │                  │            │
+ │    ├─create quest───▶│                  │            │
+ │    │ "bitcoin"       │                  │            │
+ │    │ CoinDesk, 30min │                  │            │
+ │    │                 │                  │            │
+ │    ├─bet YES 0.01───▶│                  │            │
+ │    │ + 10 REP        │                  │            │
+ │    │                 │                  │            │
+ │    │                 │◀──scan feeds─────┤            │
+ │    │                 │  every 30 sec    │            │
+ │    │                 │                  │            │
+ │    │                 │ "bitcoin" found  │            │
+ │    │                 │ in CoinDesk RSS  │            │
+ │    │                 │                  │            │
+ │    │                 │◀─resolve(YES)────┤            │
+ │    │                 │                  │            │
+ │    ├─claimReward()──▶│                  │            │
+ │    │◀── ETH + REP ──┤                  │            │
+ └─────────────────────────────────────────────────────┘
+`}</div>
 
-                  <h4 style={st.guideHeading}>2. CREATE A QUEST</h4>
-                  <p style={st.guidePara}>Pick any keyword (e.g. "bitcoin", "trump", "deepseek") + an RSS feed source + a time window (1 hour to 7 days). The question becomes: <em>will this keyword appear in that feed before time runs out?</em></p>
+                  <h4 style={st.guideHeading}>1. REGISTER — GET 100 REP</h4>
+                  <p style={st.guidePara}>Connect wallet, register on-chain, receive <span style={{ color: C.yes }}>100 REP tokens</span>. REP is your soulbound reputation. Staked on every bet. High REP = proven forecaster.</p>
+
+                  <h4 style={st.guideHeading}>2. CREATE OR JOIN A MARKET</h4>
+                  <p style={st.guidePara}>Pick a keyword + RSS feed + time window (10 min / 30 min / 1 hour). The question: <span style={{ color: C.text1 }}>Will this word appear in that feed before time runs out?</span></p>
+                  <div style={st.asciiBlock}>{`
+ Keyword:  "tariff"
+ Feed:     CNBC (Tier B, updates every 5-30 min)
+ Window:   30 minutes
+
+ ┌──────────────────────────────────────┐
+ │ Will "tariff" appear in CNBC's RSS  │
+ │ feed within the next 30 minutes?    │
+ │                                     │
+ │          [ YES ]    [ NO ]          │
+ └──────────────────────────────────────┘
+`}</div>
 
                   <h4 style={st.guideHeading}>3. PLACE YOUR BET</h4>
-                  <p style={st.guidePara}>Choose <span style={{ color: C.yes }}>YES</span> (keyword will appear) or <span style={{ color: C.no }}>NO</span> (it won't). Stake ETH (min 0.001) + 10 REP. <span style={{ color: C.warn }}>You can only bet one side per quest</span> — no hedging allowed.</p>
+                  <p style={st.guidePara}>Choose <span style={{ color: C.yes }}>YES</span> or <span style={{ color: C.no }}>NO</span>. Stake ETH (min 0.001) + 10 REP. <span style={{ color: C.warn }}>One side per quest — no hedging.</span> Forces conviction betting. Odds form from the ratio of YES/NO stakes.</p>
 
-                  <h4 style={st.guideHeading}>4. ORACLE RESOLVES</h4>
-                  <p style={st.guidePara}>The oracle scans all RSS feeds every 30 seconds. If the keyword appears before the window closes → YES wins. If the window ends with no mention → NO wins. Fully automated, no human intervention.</p>
+                  <h4 style={st.guideHeading}>4. ORACLE RESOLVES AUTOMATICALLY</h4>
+                  <p style={st.guidePara}>The oracle is a 24/7 autonomous process. No human. No disputes. Pure data.</p>
+                  <div style={st.asciiBlock}>{`
+ ┌────────────────────────────────────┐
+ │      ORACLE RESOLUTION LOGIC      │
+ │                                   │
+ │  Every 30 seconds:                │
+ │  ┌──────────────────────────┐     │
+ │  │ 1. Fetch RSS XML         │     │
+ │  │ 2. Parse titles + body   │     │
+ │  │ 3. Case-insensitive scan │     │
+ │  │ 4. Match → resolve YES   │     │
+ │  │ 5. Expired → resolve NO  │     │
+ │  │ 6. Else → wait, rescan   │     │
+ │  └──────────────────────────┘     │
+ │                                   │
+ │  Resolution = blockchain TX       │
+ │  Immutable. Verifiable. On-chain. │
+ └────────────────────────────────────┘
+`}</div>
 
-                  <h4 style={st.guideHeading}>5. COLLECT WINNINGS</h4>
-                  <p style={st.guidePara}>Winners split the losing side's ETH pool proportionally. Go to My Bets → click CLAIM on resolved quests.</p>
+                  <h4 style={st.guideHeading}>5. CLAIM WINNINGS</h4>
+                  <p style={st.guidePara}>Winners split the losing side's ETH pool proportionally. Go to <span style={{ color: C.text1 }}>MY BETS</span> tab, click CLAIM on resolved quests. Original stake + share of losers' pool returned.</p>
                 </div>
 
                 <div style={st.glass}>
-                  <h3 style={{ color: C.warn, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>GAME THEORY</h3>
+                  <h3 style={{ color: C.warn, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>GAME THEORY & STRATEGY</h3>
+                  <p style={st.guidePara}>MentionFi uses a <span style={{ color: C.text1 }}>parimutuel betting system</span> — all bets pool together, winners split losers' stakes proportionally. This creates natural price discovery and direct PvP dynamics. Research on prediction markets (Polymarket: $44B volume 2025) validates this design for information aggregation.</p>
 
-                  <div style={{ marginBottom: '16px' }}>
-                    <h4 style={st.guideHeading}>Fee Structure</h4>
-                    <p style={st.guidePara}><span style={{ color: C.text1 }}>5%</span> protocol fee + <span style={{ color: C.text1 }}>5%</span> quest creator reward from the losing pool. The remaining 90% goes to winners.</p>
-                  </div>
+                  <div style={st.asciiBlock}>{`
+ YOUR EDGE = (Your Info) - (Market Consensus)
 
-                  <div style={{ marginBottom: '16px' }}>
-                    <h4 style={st.guideHeading}>Odds & Payouts</h4>
-                    <p style={st.guidePara}>Odds are set by the market — the ratio of YES vs NO stakes. If 0.1 ETH is on YES and 0.9 ETH is on NO, YES bettors get 10:1 payout if they win. Early contrarian bets pay the most.</p>
-                  </div>
+ ┌────────────────────────────────────────┐
+ │       INFORMATION HIERARCHY            │
+ │                                       │
+ │ Tier 1: Monitor the RSS feed yourself │
+ │         See mentions before others    │
+ │                                       │
+ │ Tier 2: Know the news cycle           │
+ │         Fed meeting → "inflation"     │
+ │         will hit CNBC within 1h       │
+ │                                       │
+ │ Tier 3: Understand feed update speeds │
+ │         S-tier: every 2-5 min         │
+ │         B-tier: every 15-30 min       │
+ │         Calibrate YES/NO accordingly  │
+ │                                       │
+ │ Tier 4: Read the market itself        │
+ │         Heavy YES → cheap NO bets     │
+ │         Contrarian plays pay 10x+     │
+ └────────────────────────────────────────┘
+`}</div>
 
-                  <div style={{ marginBottom: '16px' }}>
-                    <h4 style={st.guideHeading}>Strategy Tips</h4>
-                    <ul style={{ color: C.text2, fontSize: '12px', lineHeight: '1.8', paddingLeft: '16px', margin: '4px 0' }}>
-                      <li>Bet YES on trending topics about to break into mainstream news</li>
-                      <li>Bet NO on obscure keywords with short time windows</li>
-                      <li>Check feed tiers — S-tier feeds (CoinDesk, HN) update every 2-5 min</li>
-                      <li>Create quests on topics you have information edge on</li>
-                      <li>Quest creators earn 5% of the losing pool — create popular quests</li>
-                    </ul>
-                  </div>
+                  <h4 style={st.guideHeading}>DOMINANT STRATEGIES</h4>
+                  <div style={st.asciiBlock}>{`
+ ┌──────────────┬─────────────────────────┐
+ │ STRATEGY     │ WHEN TO USE             │
+ ├──────────────┼─────────────────────────┤
+ │ News Surfer  │ Breaking event live     │
+ │  bet YES on  │ Keywords flood feeds    │
+ │  trending    │ within minutes          │
+ ├──────────────┼─────────────────────────┤
+ │ Silent Night │ Weekend / slow news     │
+ │  bet NO on   │ Obscure words won't     │
+ │  obscure     │ appear in 10-30 min     │
+ ├──────────────┼─────────────────────────┤
+ │ Feed Sniper  │ Check the actual feed   │
+ │  monitor RSS │ See mention before the  │
+ │  yourself    │ oracle's next 30s scan  │
+ ├──────────────┼─────────────────────────┤
+ │ Contrarian   │ Market is one-sided     │
+ │  bet against │ 95/5 odds = huge payout │
+ │  the crowd   │ if you're right         │
+ ├──────────────┼─────────────────────────┤
+ │ Creator      │ Topic knowledge edge    │
+ │  make quests │ Earn 5% of losing pool  │
+ │  on edge     │ regardless of outcome   │
+ └──────────────┴─────────────────────────┘
+`}</div>
 
-                  <div>
-                    <h4 style={st.guideHeading}>REP System (EIP-6909)</h4>
-                    <p style={st.guidePara}>REP is a multi-token reputation score. You start with 100. Every bet costs 10 REP. Win → you get more back. Lose → you lose it. High REP = proven track record. REP is non-transferable and soulbound.</p>
-                  </div>
+                  <h4 style={st.guideHeading}>WHY SHORT WINDOWS MATTER</h4>
+                  <p style={st.guidePara}>Prediction market research (Hanson, 2003; Polymarket data) shows the dominant strategy is to <span style={{ color: C.yes }}>bet your true belief early</span>. In 10-60 min windows, there's no value in waiting for smarter traders — the oracle resolves before late info changes outcomes.</p>
+                  <p style={st.guidePara}><span style={{ color: C.warn }}>MentionFi's speed creates urgency.</span> Contrarian windows are narrow. Once a keyword trends, the market adjusts within minutes. The alpha is in the first few bets.</p>
                 </div>
 
                 <div style={st.glass}>
-                  <h3 style={{ color: C.info, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>FEED TIERS</h3>
-                  <p style={st.guidePara}>Not all feeds are equal. Higher tier = faster updates = more likely to trigger YES outcomes quickly.</p>
-                  <div style={{ display: 'grid', gap: '6px', marginTop: '12px' }}>
-                    <div style={st.tierRow}><span style={{ color: C.yes, fontWeight: '700' }}>S-TIER</span><span style={{ color: C.text2 }}>CoinDesk, Cointelegraph, CNBC, HN — updates every 2-5 min</span></div>
-                    <div style={st.tierRow}><span style={{ color: C.info, fontWeight: '700' }}>A-TIER</span><span style={{ color: C.text2 }}>TechCrunch, CryptoSlate, Yahoo — updates every 5-15 min</span></div>
-                    <div style={st.tierRow}><span style={{ color: C.text2, fontWeight: '700' }}>B-TIER</span><span style={{ color: C.text3 }}>CryptoPotato, CryptoNews — updates every 5-30 min</span></div>
-                  </div>
+                  <h3 style={{ color: C.info, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>FEED INTELLIGENCE</h3>
+                  <p style={st.guidePara}>Feed update frequency directly impacts YES probability. Faster feeds = more content = higher chance of keyword match in short windows.</p>
+                  <div style={st.asciiBlock}>{`
+ FEED TIER SYSTEM
+ ════════════════
+
+ S-TIER │ 2-5 min updates  │ HIGH YES prob
+ ───────┼──────────────────┼──────────────
+ Cointelegraph             │ Crypto, fast
+ Hacker News               │ Tech, curated
+
+ A-TIER │ 5-15 min updates │ MODERATE
+ ───────┼──────────────────┼──────────────
+ CoinDesk, CryptoSlate     │ Major crypto
+ The Block, Decrypt        │ Web3 coverage
+ TechCrunch                │ Tech startups
+
+ B-TIER │ 5-30 min updates │ LOWER
+ ───────┼──────────────────┼──────────────
+ Blockworks, Bitcoin Mag   │ Niche focus
+ CNBC, The Defiant         │ Slower cycles
+
+ C-TIER │ 15-60 min updates│ LOW
+ ───────┼──────────────────┼──────────────
+ Yahoo News                │ General, slow
+
+ TIP: "bitcoin" on S-tier 30min → likely YES
+      "obscure" on C-tier 10min → likely NO
+`}</div>
+                </div>
+
+                <div style={st.glass}>
+                  <h3 style={{ color: C.yes, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>EXAMPLE: A COMPLETE ROUND</h3>
+                  <div style={st.asciiBlock}>{`
+ MARKET: "bitcoin" on CoinDesk — 30 min
+ ═══════════════════════════════════════
+
+ BETTING PHASE
+ ─────────────
+ YES side            NO side
+ ┌───────────┐      ┌───────────┐
+ │ Alice 0.10│      │ Carol 0.30│
+ │ Bob   0.20│      │ Dave  0.50│
+ ├───────────┤      ├───────────┤
+ │ Total 0.30│      │ Total 0.80│
+ └───────────┘      └───────────┘
+
+ Odds: YES 27% / NO 73%
+ Total pool: 1.10 ETH
+
+ RESOLUTION
+ ──────────
+ T+14 min: Oracle scans CoinDesk RSS
+ → "Bitcoin ETF sees record inflows..."
+ → Keyword "bitcoin" FOUND → YES WINS
+
+ PAYOUT
+ ──────
+ Losing pool:            0.80 ETH
+ Protocol fee (5%):     -0.04 ETH
+ Creator reward (5%):   -0.04 ETH
+ ────────────────────────────────
+ To winners:             0.72 ETH
+
+ Alice: 0.72 x (0.1/0.3) = 0.24
+        + her 0.10 back   = 0.34
+        PROFIT: +0.24 ETH (+240%)
+
+ Bob:   0.72 x (0.2/0.3) = 0.48
+        + his 0.20 back   = 0.68
+        PROFIT: +0.48 ETH (+240%)
+
+ Carol & Dave: stakes forfeited.
+`}</div>
+                </div>
+
+                <div style={st.glass}>
+                  <h3 style={{ color: C.yes, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>REP: REPUTATION SYSTEM</h3>
+                  <p style={st.guidePara}>REP is MentionFi's <span style={{ color: C.text1 }}>soulbound reputation token</span> (EIP-6909 multi-token). Non-transferable — you can't buy reputation, only earn it through correct predictions.</p>
+                  <div style={st.asciiBlock}>{`
+ REP LIFECYCLE
+ ═════════════
+ Register   → +100 REP (starting balance)
+ Place bet  → -10 REP  (staked per bet)
+ Win bet    → +10 REP  (stake returned)
+             → +bonus  (from losing pool)
+ Lose bet   → -10 REP  (forfeited)
+
+ ┌──────────────┬──────────────────────┐
+ │ REP LEVEL    │ MEANING              │
+ ├──────────────┼──────────────────────┤
+ │ 100 REP      │ New player           │
+ │ 200+ REP     │ Consistent winner    │
+ │ 500+ REP     │ Expert forecaster    │
+ │ < 50 REP     │ Losing streak        │
+ │ 0 REP        │ Cannot bet           │
+ └──────────────┴──────────────────────┘
+
+ WHY SOULBOUND?
+ Can't buy credibility. REP reflects
+ actual prediction accuracy. High REP
+ = skin in the game + proven record.
+`}</div>
+                </div>
+
+                <div style={st.glass}>
+                  <h3 style={{ color: C.info, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>AI AGENT INTEGRATION</h3>
+                  <p style={st.guidePara}>MentionFi is built for both humans and <span style={{ color: C.text1 }}>AI agents</span>. Agents discover the protocol via standard files, query the oracle API, and interact with contracts directly.</p>
+                  <div style={st.asciiBlock}>{`
+ ┌──────────┐   ┌────────────┐   ┌──────────┐
+ │ AI Agent │──▶│ Oracle API │──▶│ On-Chain │
+ │          │   │ /api/v1/.. │   │ Contract │
+ │ Reads:   │   │            │   │          │
+ │ - feeds  │   │ GET /quests│   │ bet()    │
+ │ - odds   │   │ GET /feeds │   │ create() │
+ │ - stats  │   │ GET /stats │   │ claim()  │
+ └──────────┘   └────────────┘   └──────────┘
+
+ Discovery files:
+ • /.well-known/agent-card.json (A2A)
+ • /openclaw-skills.json (tools)
+ • /AGENTS.md (integration guide)
+ • /llms.txt (LLM-readable)
+
+ Agents compete alongside humans.
+ Speed + pattern recognition
+ vs. contextual understanding.
+ The market discovers who's better.
+`}</div>
+                </div>
+
+                <div style={st.glass}>
+                  <h3 style={{ color: C.text1, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>ECONOMICS & FEES</h3>
+                  <div style={st.asciiBlock}>{`
+ FEE STRUCTURE
+ ═════════════
+ ┌──────────────────────────────────┐
+ │    TOTAL LOSING POOL = 100%     │
+ │                                 │
+ │ ┌────────┐ ┌───────┐ ┌───────┐ │
+ │ │Protocol│ │Creator│ │Winners│ │
+ │ │  5%    │ │  5%   │ │  90%  │ │
+ │ │        │ │       │ │       │ │
+ │ │Treasury│ │Quest  │ │Split  │ │
+ │ │        │ │maker  │ │by     │ │
+ │ │        │ │reward │ │stake  │ │
+ │ └────────┘ └───────┘ └───────┘ │
+ └──────────────────────────────────┘
+
+ MINIMUM STAKES
+ • ETH: 0.001 per bet
+ • REP: 10 per bet
+
+ Winners: original stake + loser share
+ Losers:  ETH + REP forfeited
+ Creators: 5% always (win or lose)
+`}</div>
                 </div>
               </div>
             )}
@@ -832,6 +1075,11 @@ const st = {
   },
   chip: {
     background: 'transparent', border: `1px solid ${C.border}`, color: C.text2, padding: '5px 12px', cursor: 'pointer', fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', borderRadius: '20px', transition: 'all 0.2s',
+  },
+  asciiBlock: {
+    background: C.bg, border: `1px solid ${C.border}`, borderRadius: '6px', padding: '12px 16px',
+    fontSize: '10px', lineHeight: '1.4', whiteSpace: 'pre', fontFamily: "'JetBrains Mono', monospace",
+    color: C.text2, overflowX: 'auto', margin: '8px 0 16px',
   },
   guideHeading: {
     color: C.text1, fontSize: '12px', letterSpacing: '1px', margin: '0 0 6px', textTransform: 'uppercase',
