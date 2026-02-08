@@ -72,6 +72,43 @@ for (const kw of KNOWN_KEYWORDS) {
   KEYWORD_HASH_MAP[ethers.keccak256(ethers.toUtf8Bytes(kw))] = kw;
 }
 
+// Deterministic round generator — all users see same keywords for same time slot
+function seededRandom(seed) {
+  let h = seed | 0;
+  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+function getBingoRound(nowSec) {
+  const SLOT = 1800; // 30 min
+  const slot = Math.floor(nowSec / SLOT);
+  const roundStart = slot * SLOT;
+  const roundEnd = roundStart + SLOT;
+  const remaining = Math.max(0, roundEnd - nowSec);
+  // Deterministic Fisher-Yates shuffle
+  const idx = KNOWN_KEYWORDS.map((_, i) => i);
+  for (let i = idx.length - 1; i > 0; i--) {
+    const j = Math.floor(seededRandom(slot * 10000 + i) * (i + 1));
+    [idx[i], idx[j]] = [idx[j], idx[i]];
+  }
+  const shuffled = idx.map(i => KNOWN_KEYWORDS[i]);
+  const feeds = RSS_FEEDS.filter(f => f.tier !== 'C');
+  const pickFeed = (n) => feeds[Math.floor(seededRandom(slot * 50000 + n) * feeds.length)];
+  return {
+    slot, roundStart, roundEnd, remaining,
+    roundNum: slot % 10000,
+    main: shuffled.slice(0, 6).map((kw, i) => ({ keyword: kw, feed: pickFeed(i), hash: ethers.keccak256(ethers.toUtf8Bytes(kw)) })),
+    quick: shuffled.slice(6, 9).map((kw, i) => ({ keyword: kw, feed: pickFeed(i + 6), hash: ethers.keccak256(ethers.toUtf8Bytes(kw)) })),
+  };
+}
+
+function fmtCountdown(sec) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
 // Colors from UX research
 const C = {
   bg: '#0A0A0F',
@@ -95,7 +132,9 @@ function MentionFiDashboard() {
   const [isRegistered, setIsRegistered] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [view, setView] = useState('dashboard');
+  const [view, setView] = useState('bingo');
+  const [now, setNow] = useState(Math.floor(Date.now() / 1000));
+  const [liveFeed, setLiveFeed] = useState([]);
   const [newQuest, setNewQuest] = useState({ keyword: '', sourceUrl: RSS_FEEDS[0].url, duration: 3600 });
   const [stakeAmount, setStakeAmount] = useState('0.001');
   const [oracleBalance, setOracleBalance] = useState(null);
@@ -197,6 +236,47 @@ function MentionFiDashboard() {
     }
   }, [error]);
 
+  // 1-second timer for bingo countdown
+  useEffect(() => {
+    const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Live word feed — fetch RSS headlines and stream words like a stock ticker
+  useEffect(() => {
+    const fetchLive = async () => {
+      try {
+        const res = await fetch(`${ORACLE_API}/api/v1/feeds`);
+        if (!res.ok) return;
+        const json = await res.json();
+        if (json.success && json.data) {
+          // Extract feed names as "recent activity" items
+          const items = json.data.map(f => ({ feed: f.name || f.url, tier: f.tier, time: Date.now() }));
+          setLiveFeed(items.slice(0, 12));
+        }
+      } catch (e) { /* ignore */ }
+    };
+    fetchLive();
+    const t = setInterval(fetchLive, 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  const round = getBingoRound(now);
+
+  // Pulse data — keyword market order book
+  const pulseData = KNOWN_KEYWORDS.map(kw => {
+    const hash = ethers.keccak256(ethers.toUtf8Bytes(kw));
+    const q = quests.find(x => x.keywordHash === hash && x.status === 0);
+    const yesPool = q ? parseFloat(q.totalYesEth || 0) : 0;
+    const noPool = q ? parseFloat(q.totalNoEth || 0) : 0;
+    const total = yesPool + noPool;
+    const sentiment = total > 0 ? Math.round((yesPool / total) * 100) : 50;
+    return { keyword: kw, hash, quest: q, yesPool, noPool, total, sentiment, listed: !!q };
+  }).sort((a, b) => b.total - a.total);
+  const listedWords = pulseData.filter(d => d.listed);
+  const unlistedWords = pulseData.filter(d => !d.listed);
+  const maxPool = Math.max(...pulseData.map(d => Math.max(d.yesPool, d.noPool)), 0.001);
+
   const getSigner = async () => {
     await activeWallet.switchChain(megaethTestnet.id);
     const eip1193 = await activeWallet.getEthereumProvider();
@@ -289,6 +369,29 @@ function MentionFiDashboard() {
     }
     finally { setLoading(false); }
   };
+
+  // Create quest from bingo grid
+  const handleBingoCreate = async (keyword, feedUrl) => {
+    if (!activeWallet) return;
+    setLoading(true); setError(null);
+    try {
+      const signer = await getSigner();
+      const contract = new ethers.Contract(QUEST_ADDRESS, QUEST_ABI, signer);
+      const tx = await contract.createQuest(keyword, feedUrl, round.roundStart + 10, round.roundEnd);
+      await tx.wait();
+      const hash = ethers.keccak256(ethers.toUtf8Bytes(keyword));
+      setKeywordMap(prev => { const m = { ...prev, [hash]: keyword }; localStorage.setItem('mentionfi_keywords', JSON.stringify(m)); return m; });
+      fetchData();
+    } catch (e) { setError('Create failed: ' + (e.shortMessage || e.message?.slice(0, 100))); }
+    finally { setLoading(false); }
+  };
+
+  // Find active quest matching a keyword hash
+  const findBingoQuest = (hash) => quests.find(q => q.keywordHash === hash && q.status === 0);
+
+  // Custom keyword limits based on REP
+  const userRepNum = parseFloat(userRep || 0);
+  const maxCustom = userRepNum >= 500 ? 5 : userRepNum >= 300 ? 2 : userRepNum >= 200 ? 1 : 0;
 
   const fmtAddr = (a) => (!a || a === ethers.ZeroAddress) ? 'None' : a.slice(0, 6) + '...' + a.slice(-4);
   const fmtTime = (end) => {
@@ -401,7 +504,9 @@ function MentionFiDashboard() {
             {/* Navigation tabs */}
             <div style={{ display: 'flex', gap: '4px', marginBottom: '20px', flexWrap: 'wrap' }}>
               {[
-                { key: 'dashboard', label: 'QUESTS' },
+                { key: 'bingo', label: 'BINGO' },
+                { key: 'pulse', label: 'PULSE' },
+                { key: 'dashboard', label: 'ALL QUESTS' },
                 { key: 'create', label: '+ CREATE' },
                 { key: 'portfolio', label: 'MY BETS' },
                 { key: 'howto', label: 'HOW TO PLAY' },
@@ -412,6 +517,255 @@ function MentionFiDashboard() {
                 </button>
               ))}
             </div>
+
+            {/* BINGO view — main dashboard */}
+            {view === 'bingo' && (
+              <div style={{ width: '100%' }}>
+                {/* Round header + countdown */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                  <div>
+                    <span style={{ color: C.text1, fontSize: '14px', fontWeight: '700' }}>ROUND #{round.roundNum}</span>
+                    <span style={{ color: C.text3, fontSize: '11px', marginLeft: '8px' }}>30 min</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: round.remaining > 0 ? C.yes : C.no, boxShadow: `0 0 8px ${round.remaining > 0 ? C.yes : C.no}` }} />
+                    <span style={{ color: round.remaining > 60 ? C.yes : C.warn, fontSize: '20px', fontWeight: '700', fontFamily: "'JetBrains Mono', monospace" }}>
+                      {fmtCountdown(round.remaining)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Live word ticker — news pulse */}
+                <div style={{ ...st.glass, padding: '10px 16px', marginBottom: '16px', overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: C.yes, animation: 'pulse 2s infinite' }} />
+                    <span style={{ color: C.text3, fontSize: '10px', letterSpacing: '1px' }}>WORD PULSE — LIVE FEED ACTIVITY</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '12px', overflowX: 'auto', paddingBottom: '4px' }}>
+                    {round.main.concat(round.quick).map((item, i) => {
+                      const q = findBingoQuest(item.hash);
+                      const isHot = q && (parseFloat(q.totalYesEth) + parseFloat(q.totalNoEth)) > 0;
+                      return (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
+                          <span style={{ color: isHot ? C.yes : C.text3, fontSize: '11px', fontWeight: isHot ? '700' : '400', textTransform: 'uppercase' }}>{item.keyword}</span>
+                          {isHot && <span style={{ color: C.warn, fontSize: '9px' }}>{(parseFloat(q.totalYesEth) + parseFloat(q.totalNoEth)).toFixed(3)}</span>}
+                          {i < 8 && <span style={{ color: C.border, fontSize: '10px' }}>|</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Stake selector for bingo */}
+                <div style={{ display: 'flex', gap: '4px', marginBottom: '12px', alignItems: 'center' }}>
+                  <span style={{ color: C.text3, fontSize: '10px', marginRight: '4px' }}>STAKE:</span>
+                  {STAKE_PRESETS.map(amt => (
+                    <button key={amt} onClick={() => setStakeAmount(amt)}
+                      style={{ ...st.chip, fontSize: '10px', padding: '3px 8px', ...(stakeAmount === amt ? { background: C.info, color: C.bg, borderColor: C.info } : {}) }}>
+                      {amt}
+                    </button>
+                  ))}
+                </div>
+
+                {/* 6-word bingo grid */}
+                <h3 style={{ color: C.text2, fontSize: '11px', letterSpacing: '1px', marginBottom: '8px' }}>MAIN ROUND — 6 KEYWORDS</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', marginBottom: '20px' }}>
+                  {round.main.map((item, i) => {
+                    const q = findBingoQuest(item.hash);
+                    const pos = q ? userPositions[q.id] : null;
+                    const pool = q ? (parseFloat(q.totalYesEth || 0) + parseFloat(q.totalNoEth || 0)) : 0;
+                    return (
+                      <div key={i} style={{ background: C.surface, border: `1px solid ${pos ? (pos.position === 1 ? C.yes : C.no) + '44' : q ? C.yes + '22' : C.border}`, borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
+                        <div style={{ color: C.text1, fontSize: '15px', fontWeight: '700', textTransform: 'uppercase', marginBottom: '2px', letterSpacing: '1px' }}>"{item.keyword}"</div>
+                        <div style={{ color: C.text3, fontSize: '9px', marginBottom: '8px' }}>{item.feed.name} [{item.feed.tier}]</div>
+                        {q ? (
+                          <>
+                            <div style={{ height: '4px', borderRadius: '2px', background: C.no, overflow: 'hidden', marginBottom: '4px' }}>
+                              <div style={{ height: '100%', width: `${q.yesOdds || 50}%`, background: C.yes }} />
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', marginBottom: '4px' }}>
+                              <span style={{ color: C.yes }}>Y {q.yesOdds || 50}%</span>
+                              <span style={{ color: C.no }}>N {q.noOdds || 50}%</span>
+                            </div>
+                            <div style={{ color: C.warn, fontSize: '13px', fontWeight: '700', marginBottom: '6px' }}>{pool.toFixed(3)} ETH</div>
+                            {pos ? (
+                              <div style={{ color: pos.position === 1 ? C.yes : C.no, fontSize: '10px', fontWeight: '700', padding: '3px 8px', background: `${pos.position === 1 ? C.yes : C.no}11`, borderRadius: '4px' }}>
+                                {pos.position === 1 ? 'YES' : 'NO'} — {parseFloat(pos.ethStake).toFixed(3)}
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', gap: '4px' }}>
+                                <button onClick={() => handleBet(q.id, 1)} disabled={loading} style={{ flex: 1, padding: '5px', background: C.yes, border: 'none', color: C.bg, fontSize: '10px', fontWeight: '700', borderRadius: '4px', cursor: 'pointer', fontFamily: "'JetBrains Mono', monospace" }}>YES</button>
+                                <button onClick={() => handleBet(q.id, 2)} disabled={loading} style={{ flex: 1, padding: '5px', background: 'transparent', border: `1px solid ${C.no}`, color: C.no, fontSize: '10px', fontWeight: '700', borderRadius: '4px', cursor: 'pointer', fontFamily: "'JetBrains Mono', monospace" }}>NO</button>
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <button onClick={() => handleBingoCreate(item.keyword, item.feed.url)} disabled={loading}
+                            style={{ width: '100%', padding: '8px', background: 'transparent', border: `1px dashed ${C.border}`, color: C.text2, fontSize: '10px', fontWeight: '600', borderRadius: '4px', cursor: 'pointer', fontFamily: "'JetBrains Mono', monospace" }}>
+                            CREATE MARKET
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* 3-word quick grid */}
+                <h3 style={{ color: C.text2, fontSize: '11px', letterSpacing: '1px', marginBottom: '8px' }}>QUICK ROUND — 3 KEYWORDS</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', marginBottom: '20px' }}>
+                  {round.quick.map((item, i) => {
+                    const q = findBingoQuest(item.hash);
+                    const pos = q ? userPositions[q.id] : null;
+                    const pool = q ? (parseFloat(q.totalYesEth || 0) + parseFloat(q.totalNoEth || 0)) : 0;
+                    return (
+                      <div key={i} style={{ background: C.surface, border: `1px solid ${pos ? (pos.position === 1 ? C.yes : C.no) + '44' : q ? C.info + '22' : C.border}`, borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
+                        <div style={{ color: C.text1, fontSize: '15px', fontWeight: '700', textTransform: 'uppercase', marginBottom: '2px' }}>"{item.keyword}"</div>
+                        <div style={{ color: C.text3, fontSize: '9px', marginBottom: '8px' }}>{item.feed.name} [{item.feed.tier}]</div>
+                        {q ? (
+                          <>
+                            <div style={{ color: C.warn, fontSize: '13px', fontWeight: '700', marginBottom: '4px' }}>{pool.toFixed(3)} ETH</div>
+                            {pos ? (
+                              <div style={{ color: pos.position === 1 ? C.yes : C.no, fontSize: '10px', fontWeight: '700' }}>{pos.position === 1 ? 'YES' : 'NO'}</div>
+                            ) : (
+                              <div style={{ display: 'flex', gap: '4px' }}>
+                                <button onClick={() => handleBet(q.id, 1)} disabled={loading} style={{ flex: 1, padding: '5px', background: C.yes, border: 'none', color: C.bg, fontSize: '10px', fontWeight: '700', borderRadius: '4px', cursor: 'pointer', fontFamily: "'JetBrains Mono', monospace" }}>YES</button>
+                                <button onClick={() => handleBet(q.id, 2)} disabled={loading} style={{ flex: 1, padding: '5px', background: 'transparent', border: `1px solid ${C.no}`, color: C.no, fontSize: '10px', fontWeight: '700', borderRadius: '4px', cursor: 'pointer', fontFamily: "'JetBrains Mono', monospace" }}>NO</button>
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <button onClick={() => handleBingoCreate(item.keyword, item.feed.url)} disabled={loading}
+                            style={{ width: '100%', padding: '8px', background: 'transparent', border: `1px dashed ${C.border}`, color: C.text2, fontSize: '10px', fontWeight: '600', borderRadius: '4px', cursor: 'pointer', fontFamily: "'JetBrains Mono', monospace" }}>
+                            CREATE
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Custom keyword — REP gated */}
+                {maxCustom > 0 ? (
+                  <div style={{ ...st.glass, padding: '14px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <span style={{ color: C.text2, fontSize: '11px' }}>CUSTOM KEYWORD ({maxCustom} slot{maxCustom > 1 ? 's' : ''})</span>
+                      <span style={{ color: C.yes, fontSize: '10px' }}>{userRepNum.toFixed(0)} REP</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <input type="text" placeholder="your keyword..." value={newQuest.keyword}
+                        onChange={e => setNewQuest({ ...newQuest, keyword: e.target.value })}
+                        style={{ ...st.input, marginBottom: 0, flex: 1 }} />
+                      <button onClick={() => { if (newQuest.keyword) handleBingoCreate(newQuest.keyword, RSS_FEEDS[0].url); }}
+                        disabled={loading || !newQuest.keyword}
+                        style={{ ...st.primaryBtn, width: 'auto', padding: '10px 20px' }}>CREATE</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ color: C.text3, fontSize: '11px', textAlign: 'center', padding: '12px' }}>
+                    Custom keywords unlocked at 200+ REP (you have {userRepNum.toFixed(0)})
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* PULSE — Live Word Order Book */}
+            {view === 'pulse' && (
+              <div style={{ width: '100%' }}>
+                {/* Scrolling ticker tape */}
+                <div style={{ ...st.glass, padding: '0', overflow: 'hidden', marginBottom: '16px' }}>
+                  <div style={{ padding: '8px 16px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: C.yes, boxShadow: `0 0 6px ${C.yes}`, animation: 'pulse 2s infinite' }} />
+                    <span style={{ color: C.text3, fontSize: '10px', letterSpacing: '1px' }}>WORD PULSE — LIVE MARKET TICKER</span>
+                    <span style={{ color: C.text3, fontSize: '10px', marginLeft: 'auto' }}>{listedWords.length} LISTED</span>
+                  </div>
+                  <div style={{ overflow: 'hidden', whiteSpace: 'nowrap', padding: '10px 16px' }}>
+                    <div style={{ display: 'inline-flex', gap: '24px', animation: 'ticker 40s linear infinite' }}>
+                      {[...pulseData, ...pulseData].map((d, i) => (
+                        <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                          <span style={{ color: d.listed ? (d.sentiment >= 50 ? C.yes : C.no) : C.text3, fontSize: '11px', fontWeight: d.listed ? '700' : '400', textTransform: 'uppercase' }}>
+                            {d.keyword}
+                          </span>
+                          {d.listed && (
+                            <>
+                              <span style={{ color: d.sentiment >= 50 ? C.yes : C.no, fontSize: '10px' }}>
+                                {d.sentiment >= 50 ? '\u25B2' : '\u25BC'}
+                              </span>
+                              <span style={{ color: C.warn, fontSize: '10px' }}>{d.total.toFixed(3)}</span>
+                            </>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Order Book */}
+                <div style={{ ...st.glass, padding: '0', marginBottom: '16px' }}>
+                  <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.border}` }}>
+                    <h3 style={{ color: C.text1, fontSize: '14px', margin: 0, letterSpacing: '1px' }}>ORDER BOOK — WORD MARKETS</h3>
+                    <p style={{ color: C.text3, fontSize: '10px', margin: '4px 0 0' }}>BID = YES pool (keyword will appear) | ASK = NO pool (keyword won't appear)</p>
+                  </div>
+
+                  {/* Column headers */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 70px 100px 70px 1fr', padding: '8px 16px', borderBottom: `1px solid ${C.border}`, fontSize: '9px', color: C.text3, letterSpacing: '1px' }}>
+                    <span style={{ textAlign: 'right' }}>BID DEPTH</span>
+                    <span style={{ textAlign: 'right' }}>BID (YES)</span>
+                    <span style={{ textAlign: 'center' }}>KEYWORD</span>
+                    <span>ASK (NO)</span>
+                    <span>ASK DEPTH</span>
+                  </div>
+
+                  {/* Listed markets */}
+                  {listedWords.length > 0 ? listedWords.map((d, i) => (
+                    <div key={d.keyword} style={{ display: 'grid', gridTemplateColumns: '1fr 70px 100px 70px 1fr', padding: '7px 16px', borderBottom: `1px solid ${C.border}22`, alignItems: 'center', background: i % 2 === 0 ? 'transparent' : `${C.bg}44` }}>
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', paddingRight: '8px' }}>
+                        <div style={{ height: '14px', background: `${C.yes}44`, borderRadius: '2px 0 0 2px', width: `${Math.max(4, (d.yesPool / maxPool) * 100)}%`, minWidth: '4px' }} />
+                      </div>
+                      <span style={{ color: C.yes, fontSize: '12px', fontWeight: '600', textAlign: 'right', paddingRight: '12px' }}>{d.yesPool.toFixed(3)}</span>
+                      <div style={{ textAlign: 'center' }}>
+                        <span style={{ color: C.text1, fontSize: '13px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px' }}>{d.keyword}</span>
+                        <div style={{ fontSize: '9px', color: d.sentiment >= 50 ? C.yes : C.no, marginTop: '1px' }}>
+                          {d.sentiment >= 50 ? '\u25B2' : '\u25BC'} {d.sentiment}%
+                        </div>
+                      </div>
+                      <span style={{ color: C.no, fontSize: '12px', fontWeight: '600', paddingLeft: '12px' }}>{d.noPool.toFixed(3)}</span>
+                      <div style={{ display: 'flex', paddingLeft: '8px' }}>
+                        <div style={{ height: '14px', background: `${C.no}44`, borderRadius: '0 2px 2px 0', width: `${Math.max(4, (d.noPool / maxPool) * 100)}%`, minWidth: '4px' }} />
+                      </div>
+                    </div>
+                  )) : (
+                    <div style={{ padding: '24px', textAlign: 'center', color: C.text3, fontSize: '12px' }}>
+                      No active markets. Go to BINGO to create the first one.
+                    </div>
+                  )}
+
+                  {/* Summary row */}
+                  {listedWords.length > 0 && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 70px 100px 70px 1fr', padding: '10px 16px', borderTop: `1px solid ${C.border}`, fontSize: '10px', color: C.warn }}>
+                      <span />
+                      <span style={{ textAlign: 'right', paddingRight: '12px', fontWeight: '700' }}>{listedWords.reduce((s, d) => s + d.yesPool, 0).toFixed(3)}</span>
+                      <span style={{ textAlign: 'center', letterSpacing: '1px' }}>TOTAL</span>
+                      <span style={{ paddingLeft: '12px', fontWeight: '700' }}>{listedWords.reduce((s, d) => s + d.noPool, 0).toFixed(3)}</span>
+                      <span />
+                    </div>
+                  )}
+                </div>
+
+                {/* Unlisted keywords — clickable to create */}
+                <div style={st.glass}>
+                  <h4 style={{ color: C.text3, fontSize: '11px', margin: '0 0 10px', letterSpacing: '1px' }}>UNLISTED — {unlistedWords.length} KEYWORDS AVAILABLE</h4>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                    {unlistedWords.slice(0, 30).map(d => (
+                      <span key={d.keyword} onClick={() => { setNewQuest({ ...newQuest, keyword: d.keyword }); setView('create'); }}
+                        style={{ color: C.text3, fontSize: '10px', padding: '3px 10px', background: C.bg, borderRadius: '4px', border: `1px solid ${C.border}`, textTransform: 'uppercase', cursor: 'pointer', transition: 'all 0.2s' }}>
+                        {d.keyword}
+                      </span>
+                    ))}
+                  </div>
+                  <p style={{ color: C.text3, fontSize: '10px', marginTop: '10px', marginBottom: 0 }}>Click any keyword to create a market for it.</p>
+                </div>
+              </div>
+            )}
 
             {/* Dashboard / Quests view */}
             {view === 'dashboard' && (
@@ -498,29 +852,71 @@ function MentionFiDashboard() {
                     <div><div style={{ color: C.warn, fontSize: '24px', fontWeight: '700' }}>{Object.values(userPositions).reduce((s, p) => s + parseFloat(p.ethStake), 0).toFixed(3)}</div><div style={{ color: C.text3, fontSize: '11px' }}>ETH at Risk</div></div>
                   </div>
                   {Object.keys(userPositions).length > 0 ? (
-                    <div style={{ display: 'grid', gap: '8px' }}>
+                    <div style={{ display: 'grid', gap: '10px' }}>
                       {Object.entries(userPositions).map(([qId, pos]) => {
                         const q = quests.find(x => x.id === Number(qId));
                         if (!q) return null;
+                        const keyword = keywordMap[q.keywordHash];
+                        const myPool = pos.position === 1 ? parseFloat(q.totalYesEth || 0) : parseFloat(q.totalNoEth || 0);
+                        const oppPool = pos.position === 1 ? parseFloat(q.totalNoEth || 0) : parseFloat(q.totalYesEth || 0);
+                        const myStake = parseFloat(pos.ethStake);
+                        const potentialWin = myPool > 0 ? (oppPool * 0.9 * (myStake / myPool)) + myStake : myStake;
+                        const roi = myStake > 0 ? ((potentialWin - myStake) / myStake * 100).toFixed(0) : '0';
+                        const isWinning = q.status === 2 && ((q.outcome === 1 && pos.position === 1) || (q.outcome === 2 && pos.position === 2));
+                        const isLosing = q.status === 2 && ((q.outcome === 1 && pos.position === 2) || (q.outcome === 2 && pos.position === 1));
                         return (
-                          <div key={qId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', background: C.bg, borderRadius: '8px', border: `1px solid ${C.border}` }}>
-                            <div>
-                              <span style={{ color: C.text1, fontSize: '13px', fontWeight: '600' }}>Quest #{qId}</span>
-                              <span style={{ color: C.text3, fontSize: '11px', marginLeft: '8px' }}>{fmtFeed(q.sourceUrl)}</span>
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                              <span style={{ color: pos.position === 1 ? C.yes : C.no, fontSize: '12px', fontWeight: '700' }}>
-                                {pos.position === 1 ? 'YES' : 'NO'}
+                          <div key={qId} style={{ padding: '14px', background: C.bg, borderRadius: '10px', border: `1px solid ${isWinning ? C.yes + '44' : isLosing ? C.no + '44' : C.border}` }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                {keyword ? (
+                                  <span style={{ color: C.text1, fontSize: '16px', fontWeight: '700', textTransform: 'uppercase' }}>"{keyword}"</span>
+                                ) : (
+                                  <span style={{ color: C.text3, fontSize: '12px', fontFamily: 'monospace' }}>#{qId}</span>
+                                )}
+                                <span style={{ color: pos.position === 1 ? C.yes : C.no, fontSize: '10px', fontWeight: '700', padding: '2px 8px', borderRadius: '4px', background: `${pos.position === 1 ? C.yes : C.no}11`, border: `1px solid ${pos.position === 1 ? C.yes : C.no}33` }}>
+                                  {pos.position === 1 ? 'YES' : 'NO'}
+                                </span>
+                              </div>
+                              <span style={{ color: q.status === 0 ? C.warn : C.text3, fontSize: '11px', fontWeight: '600' }}>
+                                {q.status === 0 ? fmtTime(q.windowEnd) : QuestStatus[q.status]}
                               </span>
-                              <span style={{ color: C.text2, fontSize: '11px' }}>{parseFloat(pos.ethStake).toFixed(3)} ETH</span>
-                              <span style={{ color: C.text3, fontSize: '11px' }}>{fmtTime(q.windowEnd)}</span>
                             </div>
+                            <div style={{ display: 'flex', gap: '12px', fontSize: '11px' }}>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ color: C.text3, marginBottom: '2px' }}>STAKED</div>
+                                <div style={{ color: C.text1, fontWeight: '600' }}>{myStake.toFixed(3)} ETH</div>
+                              </div>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ color: C.text3, marginBottom: '2px' }}>IF YOU WIN</div>
+                                <div style={{ color: C.yes, fontWeight: '600' }}>{potentialWin.toFixed(3)} ETH</div>
+                              </div>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ color: C.text3, marginBottom: '2px' }}>ROI</div>
+                                <div style={{ color: parseInt(roi) > 0 ? C.yes : C.text2, fontWeight: '600' }}>+{roi}%</div>
+                              </div>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ color: C.text3, marginBottom: '2px' }}>FEED</div>
+                                <div style={{ color: C.info }}>{fmtFeed(q.sourceUrl)}</div>
+                              </div>
+                            </div>
+                            {isWinning && (
+                              <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: `${C.yes}11`, borderRadius: '6px', border: `1px solid ${C.yes}33` }}>
+                                <span style={{ color: C.yes, fontSize: '11px', fontWeight: '700' }}>WON — {potentialWin.toFixed(3)} ETH</span>
+                                <button onClick={() => handleClaim(Number(qId))} disabled={loading}
+                                  style={{ padding: '5px 14px', background: C.yes, border: 'none', color: C.bg, fontFamily: "'JetBrains Mono', monospace", fontWeight: '600', cursor: 'pointer', borderRadius: '4px', fontSize: '11px' }}>CLAIM</button>
+                              </div>
+                            )}
+                            {isLosing && (
+                              <div style={{ marginTop: '10px', padding: '6px 12px', background: `${C.no}11`, borderRadius: '6px', border: `1px solid ${C.no}33`, textAlign: 'center' }}>
+                                <span style={{ color: C.no, fontSize: '11px' }}>LOST — {myStake.toFixed(3)} ETH forfeited</span>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
                     </div>
                   ) : (
-                    <p style={{ color: C.text3, fontSize: '12px', textAlign: 'center', margin: '12px 0 0' }}>No active bets yet. Go to Quests and place your first bet.</p>
+                    <p style={{ color: C.text3, fontSize: '12px', textAlign: 'center', margin: '12px 0 0' }}>No active bets yet. Go to BINGO and place your first bet.</p>
                   )}
                 </div>
               </div>
@@ -1098,6 +1494,9 @@ globalStyles.textContent = `
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
   * { box-sizing: border-box; }
   body { margin: 0; background: ${C.bg}; }
+  @keyframes ticker { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  @keyframes flashIn { 0% { background: rgba(0,255,136,0.15); } 100% { background: transparent; } }
   button:hover { opacity: 0.85; }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
   select { appearance: none; }
