@@ -328,10 +328,13 @@ function MentionFiDashboard() {
       const tx = await contract.createQuest(newQuest.keyword, newQuest.sourceUrl, now + 10, now + newQuest.duration);
       await tx.wait();
       // Store keyword hash mapping for display (works even if oracle is down)
-      const hash = ethers.keccak256(ethers.toUtf8Bytes(newQuest.keyword));
-      const updated = { ...keywordMap, [hash]: newQuest.keyword.toLowerCase() };
+      const kw = newQuest.keyword.toLowerCase().trim();
+      const hash = ethers.keccak256(ethers.toUtf8Bytes(kw));
+      const updated = { ...keywordMap, [hash]: kw };
       setKeywordMap(updated);
       localStorage.setItem('mentionfi_keywords', JSON.stringify(updated));
+      // Register with oracle so other users can see the keyword too
+      fetch(`${ORACLE_API}/api/v1/keywords`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keyword: kw }) }).catch(() => {});
       setNewQuest({ keyword: '', sourceUrl: RSS_FEEDS[0].url, duration: 3600 });
       setView('dashboard');
       fetchData();
@@ -371,8 +374,13 @@ function MentionFiDashboard() {
       const claim = await contract.claims(questId, activeWallet.address);
       if (Number(claim.position) === 0) { setError('You have no position on this quest.'); setLoading(false); return; }
       if (claim.claimed) { setError('Already claimed rewards for this quest.'); setLoading(false); return; }
+      const balBefore = await new ethers.JsonRpcProvider(RPC_URL).getBalance(activeWallet.address);
       const tx = await contract.claimReward(questId);
       await tx.wait();
+      const balAfter = await new ethers.JsonRpcProvider(RPC_URL).getBalance(activeWallet.address);
+      const gained = parseFloat(ethers.formatEther(balAfter - balBefore));
+      const keyword = keywordMap[q.keywordHash] || `#${questId}`;
+      setError(`CLAIMED! Quest "${keyword}" — you received ${gained > 0 ? '+' : ''}${gained.toFixed(4)} ETH + REP returned.`);
       fetchData();
     } catch (e) {
       if (e.message?.includes('NoClaim')) setError('No position to claim on this quest.');
@@ -390,10 +398,13 @@ function MentionFiDashboard() {
     try {
       const signer = await getSigner();
       const contract = new ethers.Contract(QUEST_ADDRESS, QUEST_ABI, signer);
-      const tx = await contract.createQuest(keyword, feedUrl, round.roundStart + 10, round.roundEnd);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const tx = await contract.createQuest(keyword, feedUrl, nowSec + 10, round.roundEnd);
       await tx.wait();
-      const hash = ethers.keccak256(ethers.toUtf8Bytes(keyword));
-      setKeywordMap(prev => { const m = { ...prev, [hash]: keyword }; localStorage.setItem('mentionfi_keywords', JSON.stringify(m)); return m; });
+      const kw = keyword.toLowerCase().trim();
+      const hash = ethers.keccak256(ethers.toUtf8Bytes(kw));
+      setKeywordMap(prev => { const m = { ...prev, [hash]: kw }; localStorage.setItem('mentionfi_keywords', JSON.stringify(m)); return m; });
+      fetch(`${ORACLE_API}/api/v1/keywords`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keyword: kw }) }).catch(() => {});
       fetchData();
     } catch (e) { setError('Create failed: ' + (e.shortMessage || e.message?.slice(0, 100))); }
     finally { setLoading(false); }
@@ -1572,11 +1583,15 @@ function MentionFiDashboard() {
           </>
         )}
 
-        {error && (
-          <div style={{ color: C.no, fontSize: '13px', marginTop: '16px', padding: '12px', background: `${C.no}11`, borderRadius: '8px', border: `1px solid ${C.no}33`, maxWidth: '700px', width: '100%', textAlign: 'center' }}>
-            {error.length > 200 ? error.slice(0, 200) + '...' : error}
-          </div>
-        )}
+        {error && (() => {
+          const isSuccess = error.startsWith('CLAIMED!');
+          const col = isSuccess ? C.yes : C.no;
+          return (
+            <div style={{ color: col, fontSize: '13px', marginTop: '16px', padding: '12px', background: `${col}11`, borderRadius: '8px', border: `1px solid ${col}33`, maxWidth: '700px', width: '100%', textAlign: 'center' }}>
+              {error.length > 200 ? error.slice(0, 200) + '...' : error}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

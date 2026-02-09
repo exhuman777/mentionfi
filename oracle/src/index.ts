@@ -638,10 +638,34 @@ function startServer(oracle: MentionFiOracle, port: number) {
       }
 
       // ─── API v1: Keyword Map ────────────────────────────
-      if (path === "/api/v1/keywords") {
+      if (path === "/api/v1/keywords" && req.method === "GET") {
         const keywords = oracle.getKeywordMap();
         res.writeHead(200);
         res.end(jsonLD(keywords, { count: Object.keys(keywords).length }));
+        return;
+      }
+
+      // ─── API v1: Register Keyword (POST) ──────────────
+      if (path === "/api/v1/keywords" && req.method === "POST") {
+        let body = "";
+        req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+        req.on("end", () => {
+          try {
+            const { keyword } = JSON.parse(body);
+            if (!keyword || typeof keyword !== "string" || keyword.length > 100) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ success: false, error: "Invalid keyword" }));
+              return;
+            }
+            oracle.registerKeyword(keyword.toLowerCase().trim());
+            const hash = ethers.keccak256(ethers.toUtf8Bytes(keyword.toLowerCase().trim()));
+            res.writeHead(200);
+            res.end(JSON.stringify({ success: true, hash, keyword: keyword.toLowerCase().trim() }));
+          } catch {
+            res.writeHead(400);
+            res.end(JSON.stringify({ success: false, error: "Invalid JSON" }));
+          }
+        });
         return;
       }
 
