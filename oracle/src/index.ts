@@ -448,13 +448,18 @@ class MentionFiOracle {
           outcome: Number(q[8]),
         };
 
-        // Check if quest needs resolution (window ended, still open/closed)
+        // Check if quest needs attention:
+        // 1. Window active + open → scan RSS, resolve YES if keyword found
+        // 2. Window expired + still open/closed → resolve NO (timeout)
         if (
-          (quest.status === QuestStatus.Open ||
-            quest.status === QuestStatus.Closed) &&
-          Number(quest.windowEnd) <= now
+          quest.status === QuestStatus.Open ||
+          quest.status === QuestStatus.Closed
         ) {
-          pending.push(quest);
+          const windowStarted = Number(quest.windowStart) <= now;
+          const windowExpired = Number(quest.windowEnd) <= now;
+          if (windowStarted) {
+            pending.push(quest);
+          }
         }
       } catch (error) {
         this.logError(`Error fetching quest ${i}:`, error);
@@ -474,6 +479,9 @@ class MentionFiOracle {
       `  Window: ${new Date(Number(quest.windowStart) * 1000).toISOString()} - ${new Date(Number(quest.windowEnd) * 1000).toISOString()}`
     );
 
+    const now = Math.floor(Date.now() / 1000);
+    const windowExpired = Number(quest.windowEnd) <= now;
+
     // Check RSS for keyword
     const { found, proof, matchedItem } = await this.checkRSSForKeyword(
       quest.sourceUrl,
@@ -482,9 +490,15 @@ class MentionFiOracle {
       Number(quest.windowEnd)
     );
 
+    // If keyword found → YES. If window expired and not found → NO. If window still open and not found → skip.
+    if (!found && !windowExpired) {
+      this.log(`  Window still open, keyword not found yet — skipping`);
+      return false;
+    }
+
     const outcome = found ? Position.Yes : Position.No;
     this.log(
-      `  Result: ${found ? `YES - "${matchedItem}"` : "NO (keyword not found)"}`
+      `  Result: ${found ? `YES - "${matchedItem}"` : "NO (window expired, keyword not found)"}`
     );
 
     try {
