@@ -275,10 +275,8 @@ class MentionFiOracle {
 
           // Reverse lookup keyword from cache
           const kwHash: string = q[2];
-          let keyword: string | undefined;
-          for (const [kw, h] of this.keywordCache.entries()) {
-            if (h === kwHash) { keyword = kw; break; }
-          }
+          const kwMap = this.getKeywordMap();
+          const keyword: string | undefined = kwMap[kwHash];
 
           quests.push({
             id: Number(q[0]),
