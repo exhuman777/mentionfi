@@ -27,6 +27,20 @@ const QUEST_ABI = [
   'function submitClaim(uint256 questId, uint8 position, uint256 repStake, uint256 confidence) external payable',
   'function claimReward(uint256 questId) external',
   'function getOdds(uint256) view returns (uint256 yesOdds, uint256 noOdds)',
+  'function minRepToCreate() view returns (uint256)',
+  // Custom errors for better error decoding
+  'error InsufficientReputation()',
+  'error InvalidWindow()',
+  'error InvalidStake()',
+  'error AlreadyClaimed()',
+  'error NoClaim()',
+  'error InvalidPosition()',
+  'error QuestNotOpen()',
+  'error QuestNotClosed()',
+  'error QuestNotResolved()',
+  'error WindowNotStarted()',
+  'error WindowEnded()',
+  'error TransferFailed()',
 ];
 
 const QuestStatus = ['Open', 'Closed', 'Resolved', 'Cancelled'];
@@ -119,7 +133,7 @@ function fmtCountdown(sec) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-// Colors from UX research
+// Colors — bright neon terminal aesthetic
 const C = {
   bg: '#0A0A0F',
   surface: '#12121A',
@@ -129,9 +143,9 @@ const C = {
   no: '#FF3366',
   info: '#00BBFF',
   warn: '#FFB800',
-  text1: '#E8E8F0',
-  text2: '#8888AA',
-  text3: '#44445A',
+  text1: '#FFFFFF',
+  text2: '#C0C0DD',
+  text3: '#8888BB',
 };
 
 function MentionFiDashboard() {
@@ -142,6 +156,7 @@ function MentionFiDashboard() {
   const [isRegistered, setIsRegistered] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [toasts, setToasts] = useState([]);
   const [view, setView] = useState('bingo');
   const [now, setNow] = useState(Math.floor(Date.now() / 1000));
   const [liveFeed, setLiveFeed] = useState([]);
@@ -160,6 +175,13 @@ function MentionFiDashboard() {
   });
 
   const activeWallet = wallets?.[0];
+
+  // Toast notification system
+  const addToast = useCallback((type, title, message) => {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev.slice(-4), { id, type, title, message }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 5000);
+  }, []);
 
   const fetchData = useCallback(async () => {
     try {
@@ -239,7 +261,7 @@ function MentionFiDashboard() {
           try {
             const claim = await questContract.claims(q.id, activeWallet.address);
             if (Number(claim.position) !== 0) {
-              positions[q.id] = { position: Number(claim.position), repStake: ethers.formatEther(claim.repStake), ethStake: ethers.formatEther(claim.ethStake) };
+              positions[q.id] = { position: Number(claim.position), repStake: ethers.formatEther(claim.repStake), ethStake: ethers.formatEther(claim.ethStake), claimed: claim.claimed };
             }
           } catch (e) { /* skip */ }
         }
@@ -293,9 +315,9 @@ function MentionFiDashboard() {
     };
     fetchLive();
     const t = setInterval(fetchLive, 30000);
-    // Scan progress bar — ticks every second within 30s cycle
+    // Scan progress bar — ticks every second within 15s cycle
     const sp = setInterval(() => {
-      setScanProgress(prev => (prev + 1) % 30);
+      setScanProgress(prev => (prev + 1) % 15);
     }, 1000);
     return () => { clearInterval(t); clearInterval(sp); };
   }, []);
@@ -326,52 +348,74 @@ function MentionFiDashboard() {
   const handleRegister = async () => {
     if (!activeWallet) return;
     setLoading(true); setError(null);
+    addToast('info', 'Registering...', 'Sending registration transaction');
     try {
       const provider = new ethers.JsonRpcProvider(RPC_URL);
       const repContract = new ethers.Contract(REP_TOKEN_ADDRESS, REP_TOKEN_ABI, provider);
       const alreadyReg = await repContract.isRegistered(activeWallet.address);
-      if (alreadyReg) { setIsRegistered(true); fetchData(); setLoading(false); return; }
+      if (alreadyReg) { setIsRegistered(true); fetchData(); setLoading(false); addToast('success', 'Already Registered', 'You already have 100 REP'); return; }
       const signer = await getSigner();
       const tx = await new ethers.Contract(REP_TOKEN_ADDRESS, REP_TOKEN_ABI, signer).register();
       await tx.wait();
       setIsRegistered(true);
+      addToast('success', 'Registered!', 'You received 100 REP. Start betting!');
       fetchData();
     } catch (e) {
       if (e.message?.includes('AlreadyRegistered') || e.message?.includes('revert')) {
         setIsRegistered(true); fetchData();
-      } else { setError('Registration failed: ' + (e.shortMessage || e.message?.slice(0, 100))); }
+        addToast('success', 'Already Registered', 'Your wallet is already registered');
+      } else { addToast('error', 'Registration Failed', e.shortMessage || e.message?.slice(0, 100)); }
     }
     finally { setLoading(false); }
   };
 
   const handleCreateQuest = async () => {
     if (!activeWallet || !newQuest.keyword) return;
+    const keyword = newQuest.keyword.trim();
+    if (!keyword) { addToast('error', 'Missing Keyword', 'Enter a keyword for your quest'); return; }
+    // Client-side REP check
+    const currentRep = parseFloat(userRep || 0);
+    if (currentRep < 1) {
+      addToast('error', 'Not Enough REP', `Need 1 REP to create quests (you have ${currentRep.toFixed(0)}). Win bets to earn more!`);
+      return;
+    }
     setLoading(true); setError(null);
+    addToast('info', 'Creating Quest...', `"${keyword}" — confirming transaction`);
     try {
       const signer = await getSigner();
       const contract = new ethers.Contract(QUEST_ADDRESS, QUEST_ABI, signer);
       const now = Math.floor(Date.now() / 1000);
-      const tx = await contract.createQuest(newQuest.keyword, newQuest.sourceUrl, now + 10, now + newQuest.duration);
+      const duration = DURATION_PRESETS.find(p => p.value === newQuest.duration)?.label || `${newQuest.duration}s`;
+      const feedName = RSS_FEEDS.find(f => f.url === newQuest.sourceUrl)?.name || 'RSS feed';
+      const tx = await contract.createQuest(keyword, newQuest.sourceUrl, now + 10, now + newQuest.duration);
       await tx.wait();
-      // Store keyword hash mapping for display (works even if oracle is down)
-      const kw = newQuest.keyword.toLowerCase().trim();
+      const kw = keyword.toLowerCase().trim();
       const hash = ethers.keccak256(ethers.toUtf8Bytes(kw));
       const updated = { ...keywordMap, [hash]: kw };
       setKeywordMap(updated);
       localStorage.setItem('mentionfi_keywords', JSON.stringify(updated));
-      // Register with oracle so other users can see the keyword too
       fetch(`${ORACLE_API}/api/v1/keywords`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keyword: kw }) }).catch(() => {});
       setNewQuest({ keyword: '', sourceUrl: RSS_FEEDS[0].url, duration: 3600 });
+      addToast('success', 'Quest Created!', `"${keyword}" on ${feedName} — ${duration} window. Oracle scanning every 15s.`);
       setView('dashboard');
       fetchData();
-    } catch (e) { setError(e.message); }
+    } catch (e) {
+      const msg = e.shortMessage || e.message || '';
+      if (msg.includes('InsufficientReputation')) addToast('error', 'Not Enough REP', 'Need 1 REP to create quests. Win bets to earn more!');
+      else if (msg.includes('InvalidWindow')) addToast('error', 'Invalid Time', 'Time window is invalid. Try again.');
+      else if (msg.includes('user rejected') || msg.includes('denied')) addToast('warning', 'Cancelled', 'Transaction was rejected');
+      else if (msg.includes('insufficient')) addToast('error', 'Not Enough ETH', 'You need ETH for gas fees');
+      else addToast('error', 'Quest Creation Failed', msg.slice(0, 150));
+    }
     finally { setLoading(false); }
   };
 
   const handleBet = async (questId, position) => {
     if (!activeWallet) return;
-    if (userPositions[questId]) { setError('You already have a position on this quest. One bet per quest.'); return; }
+    if (userPositions[questId]) { addToast('warning', 'Already Bet', 'You already have a position on this quest. One bet per quest.'); return; }
+    const posLabel = position === 1 ? 'YES' : 'NO';
     setLoading(true); setError(null);
+    addToast('info', `Betting ${posLabel}...`, `${stakeAmount} ETH + 10 REP on Quest #${questId}`);
     try {
       const signer = await getSigner();
       const contract = new ethers.Contract(QUEST_ADDRESS, QUEST_ABI, signer);
@@ -379,11 +423,18 @@ function MentionFiDashboard() {
       const ethStake = ethers.parseEther(stakeAmount);
       const tx = await contract.submitClaim(questId, position, repStake, 70, { value: ethStake });
       await tx.wait();
+      addToast('success', `Bet Placed: ${posLabel}!`, `${stakeAmount} ETH + 10 REP on Quest #${questId}. Good luck!`);
       fetchData();
     } catch (e) {
-      if (e.message?.includes('AlreadyClaimed')) setError('You already bet on this quest. One position per quest — no hedging.');
-      else if (e.message?.includes('insufficient')) setError('Not enough ETH or REP for this bet.');
-      else setError('Bet failed: ' + (e.shortMessage || e.message?.slice(0, 120)));
+      const msg = e.shortMessage || e.message || '';
+      if (msg.includes('AlreadyClaimed')) addToast('warning', 'Already Bet', 'One position per quest — no hedging.');
+      else if (msg.includes('InsufficientReputation')) addToast('error', 'Not Enough REP', 'Need 10 REP minimum to bet. Win bets to earn more!');
+      else if (msg.includes('InvalidStake')) addToast('error', 'Invalid Stake', 'ETH must be 0.001-1 ETH. REP must be 10-100.');
+      else if (msg.includes('WindowEnded')) addToast('error', 'Window Closed', 'Betting period has ended for this quest.');
+      else if (msg.includes('WindowNotStarted')) addToast('warning', 'Not Started', 'Betting window hasn\'t started yet.');
+      else if (msg.includes('insufficient')) addToast('error', 'Insufficient Funds', 'Not enough ETH or REP for this bet.');
+      else if (msg.includes('user rejected') || msg.includes('denied')) addToast('warning', 'Cancelled', 'Transaction was rejected');
+      else addToast('error', 'Bet Failed', msg.slice(0, 150));
     }
     finally { setLoading(false); }
   };
@@ -391,28 +442,30 @@ function MentionFiDashboard() {
   const handleClaim = async (questId) => {
     if (!activeWallet) return;
     setLoading(true); setError(null);
+    addToast('info', 'Claiming Reward...', `Processing Quest #${questId}`);
     try {
       const signer = await getSigner();
       const contract = new ethers.Contract(QUEST_ADDRESS, QUEST_ABI, signer);
-      // Check quest status first
       const q = await contract.quests(questId);
-      if (Number(q.status) !== 2) { setError('Quest not resolved yet. The oracle resolves quests automatically — wait for the time window to end.'); setLoading(false); return; }
+      if (Number(q.status) !== 2) { addToast('warning', 'Not Ready', 'Quest not resolved yet. Oracle resolves automatically — wait for the time window to end.'); setLoading(false); return; }
       const claim = await contract.claims(questId, activeWallet.address);
-      if (Number(claim.position) === 0) { setError('You have no position on this quest.'); setLoading(false); return; }
-      if (claim.claimed) { setError('Already claimed rewards for this quest.'); setLoading(false); return; }
+      if (Number(claim.position) === 0) { addToast('warning', 'No Position', 'You have no bet on this quest.'); setLoading(false); return; }
+      if (claim.claimed) { addToast('warning', 'Already Claimed', 'You already claimed rewards for this quest.'); setLoading(false); return; }
       const balBefore = await new ethers.JsonRpcProvider(RPC_URL).getBalance(activeWallet.address);
       const tx = await contract.claimReward(questId);
       await tx.wait();
       const balAfter = await new ethers.JsonRpcProvider(RPC_URL).getBalance(activeWallet.address);
       const gained = parseFloat(ethers.formatEther(balAfter - balBefore));
       const keyword = keywordMap[q.keywordHash] || `#${questId}`;
-      setError(`CLAIMED! Quest "${keyword}" — you received ${gained > 0 ? '+' : ''}${gained.toFixed(4)} ETH + REP returned.`);
+      addToast('success', 'Reward Claimed!', `"${keyword}" — ${gained > 0 ? '+' : ''}${gained.toFixed(4)} ETH + REP returned`);
       fetchData();
     } catch (e) {
-      if (e.message?.includes('NoClaim')) setError('No position to claim on this quest.');
-      else if (e.message?.includes('QuestNotResolved')) setError('Quest not resolved yet — wait for the oracle.');
-      else if (e.message?.includes('AlreadyClaimed')) setError('Already claimed.');
-      else setError('Claim failed: ' + (e.shortMessage || e.message?.slice(0, 120)));
+      const msg = e.shortMessage || e.message || '';
+      if (msg.includes('NoClaim')) addToast('error', 'No Claim', 'No position to claim on this quest.');
+      else if (msg.includes('QuestNotResolved')) addToast('warning', 'Not Resolved', 'Wait for the oracle to resolve this quest.');
+      else if (msg.includes('AlreadyClaimed')) addToast('warning', 'Already Claimed', 'Rewards already collected.');
+      else if (msg.includes('user rejected') || msg.includes('denied')) addToast('warning', 'Cancelled', 'Transaction was rejected');
+      else addToast('error', 'Claim Failed', msg.slice(0, 150));
     }
     finally { setLoading(false); }
   };
@@ -420,7 +473,15 @@ function MentionFiDashboard() {
   // Create quest from bingo grid
   const handleBingoCreate = async (keyword, feedUrl) => {
     if (!activeWallet) return;
+    // Client-side REP check — contract requires minRepToCreate (50 REP)
+    const currentRep = parseFloat(userRep || 0);
+    if (currentRep < 1) {
+      addToast('error', 'Not Enough REP', `Need 1 REP to create markets (you have ${currentRep.toFixed(0)}). Place winning bets to earn more REP!`);
+      return;
+    }
     setLoading(true); setError(null);
+    const feedName = RSS_FEEDS.find(f => f.url === feedUrl)?.name || 'RSS feed';
+    addToast('info', 'Creating Market...', `"${keyword}" on ${feedName}`);
     try {
       const signer = await getSigner();
       const contract = new ethers.Contract(QUEST_ADDRESS, QUEST_ABI, signer);
@@ -431,14 +492,21 @@ function MentionFiDashboard() {
       const hash = ethers.keccak256(ethers.toUtf8Bytes(kw));
       setKeywordMap(prev => { const m = { ...prev, [hash]: kw }; localStorage.setItem('mentionfi_keywords', JSON.stringify(m)); return m; });
       fetch(`${ORACLE_API}/api/v1/keywords`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keyword: kw }) }).catch(() => {});
+      addToast('success', 'Market Created!', `"${keyword}" — bet YES/NO now!`);
       fetchData();
-    } catch (e) { setError('Create failed: ' + (e.shortMessage || e.message?.slice(0, 100))); }
+    } catch (e) {
+      const msg = e.shortMessage || e.message || '';
+      if (msg.includes('InsufficientReputation')) addToast('error', 'Not Enough REP', `Need 1 REP to create markets. Win bets to earn more!`);
+      else if (msg.includes('InvalidWindow')) addToast('error', 'Invalid Time', 'Round may have ended. Wait for next round.');
+      else if (msg.includes('user rejected') || msg.includes('denied')) addToast('warning', 'Cancelled', 'Transaction was rejected');
+      else addToast('error', 'Create Failed', msg.slice(0, 150));
+    }
     finally { setLoading(false); }
   };
 
   const handleShare = (text) => {
     if (navigator.share) navigator.share({ title: 'MentionFi', text, url: 'https://mentionfi.vercel.app' });
-    else { navigator.clipboard.writeText(text + ' https://mentionfi.vercel.app'); setError('Copied to clipboard!'); }
+    else { navigator.clipboard.writeText(text + ' https://mentionfi.vercel.app'); addToast('success', 'Copied!', 'Link copied to clipboard'); }
   };
 
   // Find active quest matching a keyword hash
@@ -480,41 +548,77 @@ function MentionFiDashboard() {
       <div style={st.container}>
         <RogueASCIIBg />
         <div style={st.content}>
-          <div style={{ textAlign: 'center', marginBottom: '48px' }}>
-            <h1 style={{ color: C.text1, fontSize: '42px', fontWeight: '700', margin: 0, letterSpacing: '-2px' }}>MENTIONFI</h1>
-            <div style={{ color: C.yes, fontSize: '13px', letterSpacing: '3px', marginTop: '4px', fontWeight: '600' }}>MENTION MARKETS</div>
-            <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '10px' }}>
+          {/* Hero */}
+          <div style={{ textAlign: 'center', marginBottom: '40px', paddingTop: '20px' }}>
+            <h1 style={{ color: C.text1, fontSize: '48px', fontWeight: '700', margin: 0, letterSpacing: '-2px', textShadow: `0 0 40px ${C.yes}33` }}>MENTIONFI</h1>
+            <div style={{ color: C.yes, fontSize: '14px', letterSpacing: '4px', marginTop: '6px', fontWeight: '600' }}>MENTION MARKETS</div>
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '12px' }}>
               <span style={st.badge}>MegaETH</span>
-              <span style={{ ...st.badge, borderColor: C.yes, color: C.yes }}>LIVE</span>
-              <span style={{ ...st.badge, borderColor: C.warn, color: C.warn }}>10-60 MIN</span>
-            </div>
-            <p style={{ color: C.text2, marginTop: '16px', fontSize: '14px', maxWidth: '480px', margin: '16px auto 0', lineHeight: '1.6' }}>
-              Fast prediction markets on news mentions. Pick a keyword. Choose a feed. Bet if it gets mentioned. Oracle scans every 30s. Winners take the pool.
-            </p>
-            <div style={{ display: 'flex', gap: '16px', justifyContent: 'center', marginTop: '16px', flexWrap: 'wrap' }}>
-              <span style={{ color: C.text3, fontSize: '11px' }}>10 REP + 0.001 ETH min</span>
-              <span style={{ color: C.text3, fontSize: '11px' }}>|</span>
-              <span style={{ color: C.text3, fontSize: '11px' }}>90% to winners</span>
-              <span style={{ color: C.text3, fontSize: '11px' }}>|</span>
-              <span style={{ color: C.text3, fontSize: '11px' }}>Auto-resolved by oracle</span>
+              <span style={{ ...st.badge, borderColor: `${C.yes}66`, color: C.yes, animation: 'pulse 2s infinite' }}>LIVE</span>
+              <span style={{ ...st.badge, borderColor: `${C.warn}66`, color: C.warn }}>5-60 MIN</span>
             </div>
           </div>
 
-          {/* Stats preview */}
-          <div style={{ display: 'flex', gap: '24px', justifyContent: 'center', marginBottom: '32px', flexWrap: 'wrap' }}>
-            <StatBox label="Live Markets" value={activeQuests.length} color={C.yes} />
-            <StatBox label="Resolved" value={resolvedQuests.length} />
-            <StatBox label="Total Pool" value={fmtEth(totalEthStaked)} color={C.warn} />
+          {/* Inline stats bar */}
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '32px', marginBottom: '32px', padding: '14px 24px', background: `${C.surface}CC`, borderRadius: '10px', border: `1px solid ${C.border}`, backdropFilter: 'blur(8px)' }}>
+            <div style={{ textAlign: 'center' }}>
+              <span style={{ color: C.yes, fontSize: '22px', fontWeight: '700' }}>{activeQuests.length}</span>
+              <span style={{ color: C.text3, fontSize: '10px', display: 'block', letterSpacing: '0.5px' }}>LIVE</span>
+            </div>
+            <div style={{ width: '1px', background: C.border }} />
+            <div style={{ textAlign: 'center' }}>
+              <span style={{ color: C.text1, fontSize: '22px', fontWeight: '700' }}>{resolvedQuests.length}</span>
+              <span style={{ color: C.text3, fontSize: '10px', display: 'block', letterSpacing: '0.5px' }}>RESOLVED</span>
+            </div>
+            <div style={{ width: '1px', background: C.border }} />
+            <div style={{ textAlign: 'center' }}>
+              <span style={{ color: C.warn, fontSize: '22px', fontWeight: '700' }}>{totalEthStaked > 0 ? totalEthStaked.toFixed(2) : '0'}</span>
+              <span style={{ color: C.text3, fontSize: '10px', display: 'block', letterSpacing: '0.5px' }}>ETH POOL</span>
+            </div>
           </div>
 
-          <div style={{ textAlign: 'center' }}>
-            <button onClick={login} style={st.primaryBtn}>ENTER MENTION MARKETS</button>
-            <p style={{ color: C.text3, fontSize: '11px', marginTop: '8px' }}>Connect wallet. Register. Get 100 REP. Start betting.</p>
+          {/* How it works — 3 steps */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '28px' }}>
+            <div style={{ background: `${C.surface}EE`, border: `1px solid ${C.yes}44`, borderRadius: '10px', padding: '16px 12px', textAlign: 'center', position: 'relative', overflow: 'hidden' }}>
+              <div style={{ position: 'absolute', top: '-8px', right: '-8px', width: '40px', height: '40px', background: `${C.yes}11`, borderRadius: '50%' }} />
+              <div style={{ color: C.yes, fontSize: '20px', fontWeight: '700', marginBottom: '6px' }}>1</div>
+              <div style={{ color: C.text1, fontSize: '12px', fontWeight: '700', marginBottom: '4px' }}>PICK A WORD</div>
+              <div style={{ color: C.text2, fontSize: '10px', lineHeight: '1.5' }}>Choose keyword + news feed + time window</div>
+            </div>
+            <div style={{ background: `${C.surface}EE`, border: `1px solid ${C.warn}44`, borderRadius: '10px', padding: '16px 12px', textAlign: 'center', position: 'relative', overflow: 'hidden' }}>
+              <div style={{ position: 'absolute', top: '-8px', right: '-8px', width: '40px', height: '40px', background: `${C.warn}11`, borderRadius: '50%' }} />
+              <div style={{ color: C.warn, fontSize: '20px', fontWeight: '700', marginBottom: '6px' }}>2</div>
+              <div style={{ color: C.text1, fontSize: '12px', fontWeight: '700', marginBottom: '4px' }}>BET YES / NO</div>
+              <div style={{ color: C.text2, fontSize: '10px', lineHeight: '1.5' }}>Will a NEW article mention it?</div>
+            </div>
+            <div style={{ background: `${C.surface}EE`, border: `1px solid ${C.info}44`, borderRadius: '10px', padding: '16px 12px', textAlign: 'center', position: 'relative', overflow: 'hidden' }}>
+              <div style={{ position: 'absolute', top: '-8px', right: '-8px', width: '40px', height: '40px', background: `${C.info}11`, borderRadius: '50%' }} />
+              <div style={{ color: C.info, fontSize: '20px', fontWeight: '700', marginBottom: '6px' }}>3</div>
+              <div style={{ color: C.text1, fontSize: '12px', fontWeight: '700', marginBottom: '4px' }}>WIN ETH</div>
+              <div style={{ color: C.text2, fontSize: '10px', lineHeight: '1.5' }}>Oracle scans every 15s. Winners take pool.</div>
+            </div>
+          </div>
+
+          {/* Description */}
+          <p style={{ color: C.text2, fontSize: '13px', maxWidth: '500px', margin: '0 auto 24px', lineHeight: '1.7', textAlign: 'center' }}>
+            Bet on what news will publish next. The oracle watches RSS feeds in real-time. Short windows create genuine uncertainty — you're predicting <span style={{ color: C.text1 }}>future publications</span>.
+          </p>
+
+          {/* CTA */}
+          <div style={{ textAlign: 'center', marginBottom: '32px' }}>
+            <button onClick={login} style={{ ...st.primaryBtn, maxWidth: '400px' }}>ENTER MENTION MARKETS</button>
+            <div style={{ display: 'flex', gap: '16px', justifyContent: 'center', marginTop: '12px', flexWrap: 'wrap' }}>
+              <span style={{ color: C.text3, fontSize: '10px' }}>0.001 ETH min bet</span>
+              <span style={{ color: C.text3, fontSize: '10px' }}>|</span>
+              <span style={{ color: C.text3, fontSize: '10px' }}>90% to winners</span>
+              <span style={{ color: C.text3, fontSize: '10px' }}>|</span>
+              <span style={{ color: C.text3, fontSize: '10px' }}>Auto-resolved on-chain</span>
+            </div>
           </div>
 
           {/* Show active quests preview */}
           {activeQuests.length > 0 && (
-            <div style={{ marginTop: '32px', width: '100%', maxWidth: '700px' }}>
+            <div style={{ width: '100%', maxWidth: '700px' }}>
               <h3 style={{ color: C.text2, fontSize: '12px', letterSpacing: '1px', marginBottom: '12px' }}>LIVE QUESTS</h3>
               {activeQuests.slice(0, 3).map(q => <QuestCard key={q.id} quest={q} fmtTime={fmtTime} fmtFeed={fmtFeed} keywordMap={keywordMap} />)}
             </div>
@@ -532,8 +636,9 @@ function MentionFiDashboard() {
         {/* Header bar */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <h1 style={{ color: C.text1, fontSize: '24px', fontWeight: '700', margin: 0, letterSpacing: '-1px' }}>MENTIONFI</h1>
-            <span style={st.badge}>MegaETH</span>
+            <h1 onClick={() => setView('bingo')} style={{ color: C.text1, fontSize: '24px', fontWeight: '700', margin: 0, letterSpacing: '-1px', cursor: 'pointer', textShadow: `0 0 20px ${C.yes}33` }}>MENTIONFI</h1>
+            <span style={{ ...st.badge, borderColor: `${C.yes}44`, color: C.yes }}>MegaETH</span>
+            <span style={{ ...st.badge, borderColor: `${C.yes}66`, color: C.yes, animation: 'pulse 2s infinite' }}>LIVE</span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '13px' }}>
             <span style={{ color: C.text2 }}>{fmtAddr(activeWallet?.address)}</span>
@@ -597,6 +702,13 @@ function MentionFiDashboard() {
                 { key: 'dashboard', label: 'ALL QUESTS' },
                 { key: 'create', label: '+ CREATE' },
                 { key: 'portfolio', label: 'MY BETS' },
+                { key: 'actions', label: (() => {
+                  const claimable = Object.entries(userPositions).filter(([qId, pos]) => {
+                    const q = quests.find(x => x.id === Number(qId));
+                    return q && q.status === 2 && !pos.claimed && ((q.outcome === 1 && pos.position === 1) || (q.outcome === 2 && pos.position === 2));
+                  }).length;
+                  return claimable > 0 ? `ACTIONS (${claimable})` : 'ACTIONS';
+                })() },
                 { key: 'howto', label: 'HOW TO PLAY' },
                 { key: 'about', label: 'ABOUT' },
                 { key: 'oracle', label: 'ORACLE' },
@@ -610,25 +722,77 @@ function MentionFiDashboard() {
             {/* BINGO view — main dashboard */}
             {view === 'bingo' && (
               <div style={{ width: '100%' }}>
-                {/* Round header + countdown */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                  <div>
-                    <span style={{ color: C.text1, fontSize: '14px', fontWeight: '700' }}>ROUND #{round.roundNum}</span>
-                    <span style={{ color: C.text3, fontSize: '11px', marginLeft: '8px' }}>30 min</span>
+                {/* Quick Guide Banner */}
+                <div style={{ ...st.glass, padding: '14px 18px', marginBottom: '12px', borderColor: `${C.yes}33`, background: `linear-gradient(135deg, ${C.surface}EE, ${C.bg}EE)` }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', textAlign: 'center' }}>
+                    <div>
+                      <div style={{ color: C.yes, fontSize: '18px', fontWeight: '700', marginBottom: '2px' }}>1</div>
+                      <div style={{ color: C.text1, fontSize: '11px', fontWeight: '600' }}>CREATE or PICK</div>
+                      <div style={{ color: C.text2, fontSize: '10px' }}>Choose a keyword market</div>
+                    </div>
+                    <div>
+                      <div style={{ color: C.warn, fontSize: '18px', fontWeight: '700', marginBottom: '2px' }}>2</div>
+                      <div style={{ color: C.text1, fontSize: '11px', fontWeight: '600' }}>BET YES or NO</div>
+                      <div style={{ color: C.text2, fontSize: '10px' }}>Stake ETH + REP</div>
+                    </div>
+                    <div>
+                      <div style={{ color: C.info, fontSize: '18px', fontWeight: '700', marginBottom: '2px' }}>3</div>
+                      <div style={{ color: C.text1, fontSize: '11px', fontWeight: '600' }}>ORACLE RESOLVES</div>
+                      <div style={{ color: C.text2, fontSize: '10px' }}>Winners take the pool</div>
+                    </div>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: round.remaining > 0 ? C.yes : C.no, boxShadow: `0 0 8px ${round.remaining > 0 ? C.yes : C.no}` }} />
-                    <span style={{ color: round.remaining > 60 ? C.yes : C.warn, fontSize: '20px', fontWeight: '700', fontFamily: "'JetBrains Mono', monospace" }}>
+                </div>
+
+                {/* Round header + countdown + timeline */}
+                <div style={{ ...st.glass, padding: '16px 18px', marginBottom: '16px', borderColor: round.remaining < 120 ? `${C.warn}44` : `${C.yes}33` }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: round.remaining > 0 ? C.yes : C.no, boxShadow: `0 0 12px ${round.remaining > 0 ? C.yes : C.no}`, animation: 'pulse 2s infinite' }} />
+                      <span style={{ color: C.text1, fontSize: '16px', fontWeight: '700' }}>ROUND #{round.roundNum}</span>
+                      <span style={{ color: C.text3, fontSize: '11px', padding: '2px 8px', background: `${C.info}22`, borderRadius: '4px', border: `1px solid ${C.info}33` }}>30 MIN</span>
+                    </div>
+                    <div style={{
+                      color: round.remaining < 60 ? C.no : round.remaining < 120 ? C.warn : C.yes,
+                      fontSize: '28px', fontWeight: '700', fontFamily: "'JetBrains Mono', monospace",
+                      animation: round.remaining < 60 ? 'countdownGlow 1s ease infinite' : 'none',
+                      textShadow: `0 0 15px ${round.remaining < 60 ? C.no : round.remaining < 120 ? C.warn : C.yes}66`,
+                    }}>
                       {fmtCountdown(round.remaining)}
+                    </div>
+                  </div>
+
+                  {/* Visual timeline bar */}
+                  <div style={{ position: 'relative', height: '8px', background: C.bg, borderRadius: '4px', overflow: 'hidden', border: `1px solid ${C.border}` }}>
+                    <div style={{
+                      height: '100%', borderRadius: '4px', transition: 'width 1s linear',
+                      width: `${((1800 - round.remaining) / 1800) * 100}%`,
+                      background: round.remaining < 60 ? `linear-gradient(90deg, ${C.no}88, ${C.no})` :
+                                  round.remaining < 120 ? `linear-gradient(90deg, ${C.warn}88, ${C.warn})` :
+                                  `linear-gradient(90deg, ${C.yes}44, ${C.yes})`,
+                      boxShadow: `0 0 8px ${round.remaining < 60 ? C.no : round.remaining < 120 ? C.warn : C.yes}66`,
+                    }} />
+                    {/* Scan indicator */}
+                    <div style={{
+                      position: 'absolute', top: 0, width: '2px', height: '100%',
+                      background: C.info, boxShadow: `0 0 6px ${C.info}`,
+                      left: `${(scanProgress / 15) * 100}%`, transition: 'left 1s linear', opacity: 0.8,
+                    }} />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px', fontSize: '9px' }}>
+                    <span style={{ color: C.text3 }}>START</span>
+                    <span style={{ color: C.info, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: C.info, animation: 'pulse 1.5s infinite' }} />
+                      ORACLE SCANNING
                     </span>
+                    <span style={{ color: C.text3 }}>END</span>
                   </div>
                 </div>
 
                 {/* Live word ticker — news pulse */}
                 <div style={{ ...st.glass, padding: '10px 16px', marginBottom: '16px', overflow: 'hidden' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: C.yes, animation: 'pulse 2s infinite' }} />
-                    <span style={{ color: C.text3, fontSize: '10px', letterSpacing: '1px' }}>WORD PULSE — LIVE FEED ACTIVITY</span>
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: C.yes, animation: 'pulse 2s infinite', boxShadow: `0 0 8px ${C.yes}` }} />
+                    <span style={{ color: C.text2, fontSize: '10px', letterSpacing: '1px', fontWeight: '600' }}>WORD PULSE — LIVE FEED ACTIVITY</span>
                   </div>
                   <div style={{ display: 'flex', gap: '12px', overflowX: 'auto', paddingBottom: '4px' }}>
                     {round.main.concat(round.quick).map((item, i) => {
@@ -636,9 +800,9 @@ function MentionFiDashboard() {
                       const isHot = q && (parseFloat(q.totalYesEth) + parseFloat(q.totalNoEth)) > 0;
                       return (
                         <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
-                          <span style={{ color: isHot ? C.yes : C.text3, fontSize: '11px', fontWeight: isHot ? '700' : '400', textTransform: 'uppercase' }}>{item.keyword}</span>
-                          {isHot && <span style={{ color: C.warn, fontSize: '9px' }}>{fmtEth(parseFloat(q.totalYesEth) + parseFloat(q.totalNoEth))}</span>}
-                          {i < 8 && <span style={{ color: C.border, fontSize: '10px' }}>|</span>}
+                          <span style={{ color: isHot ? C.yes : C.text2, fontSize: '11px', fontWeight: isHot ? '700' : '500', textTransform: 'uppercase', textShadow: isHot ? `0 0 8px ${C.yes}44` : 'none' }}>{item.keyword}</span>
+                          {isHot && <span style={{ color: C.warn, fontSize: '9px', fontWeight: '700' }}>{fmtEth(parseFloat(q.totalYesEth) + parseFloat(q.totalNoEth))}</span>}
+                          {i < 8 && <span style={{ color: C.text3, fontSize: '10px' }}>|</span>}
                         </div>
                       );
                     })}
@@ -655,6 +819,14 @@ function MentionFiDashboard() {
                     </button>
                   ))}
                 </div>
+
+                {/* REP warning */}
+                {parseFloat(userRep || 0) < 1 && (
+                  <div style={{ padding: '10px 14px', marginBottom: '12px', background: `${C.warn}11`, border: `1px solid ${C.warn}33`, borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '14px' }}>!</span>
+                    <span style={{ color: C.warn, fontSize: '11px' }}>Need <b>1 REP</b> to create markets (you have {parseFloat(userRep || 0).toFixed(0)}). Bet on existing markets to earn REP from wins!</span>
+                  </div>
+                )}
 
                 {/* 6-word bingo grid */}
                 <h3 style={{ color: C.text2, fontSize: '11px', letterSpacing: '1px', marginBottom: '8px' }}>MAIN ROUND — 6 KEYWORDS</h3>
@@ -989,11 +1161,17 @@ function MentionFiDashboard() {
                               </div>
                             </div>
                             {isWinning && (
-                              <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: `${C.yes}11`, borderRadius: '6px', border: `1px solid ${C.yes}33` }}>
-                                <span style={{ color: C.yes, fontSize: '11px', fontWeight: '700' }}>WON — {fmtEth(potentialWin)}</span>
+                              <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: `${pos.claimed ? C.yes + '08' : C.yes + '11'}`, borderRadius: '6px', border: `1px solid ${C.yes}33` }}>
+                                <span style={{ color: C.yes, fontSize: '11px', fontWeight: '700' }}>
+                                  {pos.claimed ? `CLAIMED — ${fmtEth(potentialWin)}` : `WON — ${fmtEth(potentialWin)}`}
+                                </span>
                                 <div style={{ display: 'flex', gap: '6px' }}>
-                                  <button onClick={() => handleClaim(Number(qId))} disabled={loading}
-                                    style={{ padding: '5px 14px', background: C.yes, border: 'none', color: C.bg, fontFamily: "'JetBrains Mono', monospace", fontWeight: '600', cursor: 'pointer', borderRadius: '4px', fontSize: '11px' }}>CLAIM</button>
+                                  {!pos.claimed ? (
+                                    <button onClick={() => handleClaim(Number(qId))} disabled={loading}
+                                      style={{ padding: '5px 14px', background: C.yes, border: 'none', color: C.bg, fontFamily: "'JetBrains Mono', monospace", fontWeight: '600', cursor: 'pointer', borderRadius: '4px', fontSize: '11px' }}>CLAIM</button>
+                                  ) : (
+                                    <span style={{ padding: '5px 14px', background: `${C.yes}22`, color: C.yes, fontFamily: "'JetBrains Mono', monospace", fontWeight: '600', borderRadius: '4px', fontSize: '11px' }}>COLLECTED</span>
+                                  )}
                                   <button onClick={() => handleShare(`Won ${fmtEth(potentialWin)} on "${keyword || '#' + qId}" in MentionFi!`)}
                                     style={{ padding: '5px 10px', background: 'transparent', border: `1px solid ${C.border}`, color: C.text2, fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', cursor: 'pointer', borderRadius: '4px' }}>&gt;</button>
                                 </div>
@@ -1015,12 +1193,128 @@ function MentionFiDashboard() {
               </div>
             )}
 
+            {/* ACTIONS view — claim rewards, see results */}
+            {view === 'actions' && (() => {
+              const items = Object.entries(userPositions).map(([qId, pos]) => {
+                const q = quests.find(x => x.id === Number(qId));
+                if (!q) return null;
+                const keyword = keywordMap[q.keywordHash] || `#${qId}`;
+                const isWin = q.status === 2 && ((q.outcome === 1 && pos.position === 1) || (q.outcome === 2 && pos.position === 2));
+                const isLoss = q.status === 2 && ((q.outcome === 1 && pos.position === 2) || (q.outcome === 2 && pos.position === 1));
+                const myPool = pos.position === 1 ? parseFloat(q.totalYesEth || 0) : parseFloat(q.totalNoEth || 0);
+                const oppPool = pos.position === 1 ? parseFloat(q.totalNoEth || 0) : parseFloat(q.totalYesEth || 0);
+                const myStake = parseFloat(pos.ethStake);
+                const potentialWin = myPool > 0 ? (oppPool * 0.9 * (myStake / myPool)) + myStake : myStake;
+                let status = 'active';
+                if (isWin && !pos.claimed) status = 'claimable';
+                else if (isWin && pos.claimed) status = 'claimed';
+                else if (isLoss) status = 'lost';
+                return { qId: Number(qId), q, pos, keyword, isWin, isLoss, myStake, potentialWin, status };
+              }).filter(Boolean);
+              const claimable = items.filter(i => i.status === 'claimable');
+              const active = items.filter(i => i.status === 'active');
+              const claimed = items.filter(i => i.status === 'claimed');
+              const lost = items.filter(i => i.status === 'lost');
+              return (
+                <div style={{ width: '100%' }}>
+                  {/* Claimable rewards */}
+                  {claimable.length > 0 && (
+                    <div style={{ ...st.glass, borderColor: `${C.yes}44`, background: `linear-gradient(135deg, ${C.surface}EE, ${C.yes}08)` }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                        <h3 style={{ color: C.yes, fontSize: '14px', margin: 0, letterSpacing: '1px' }}>CLAIM REWARDS ({claimable.length})</h3>
+                        <span style={{ color: C.yes, fontSize: '10px', padding: '3px 8px', background: `${C.yes}22`, borderRadius: '4px', fontWeight: '700' }}>ACTION NEEDED</span>
+                      </div>
+                      <div style={{ display: 'grid', gap: '8px' }}>
+                        {claimable.map(i => (
+                          <div key={i.qId} style={{ padding: '14px', background: C.bg, borderRadius: '10px', border: `1px solid ${C.yes}33`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                                <span style={{ color: C.text1, fontSize: '16px', fontWeight: '700', textTransform: 'uppercase' }}>"{i.keyword}"</span>
+                                <span style={{ color: i.pos.position === 1 ? C.yes : C.no, fontSize: '10px', fontWeight: '700', padding: '2px 6px', borderRadius: '3px', background: `${i.pos.position === 1 ? C.yes : C.no}15` }}>
+                                  {i.pos.position === 1 ? 'YES' : 'NO'}
+                                </span>
+                                <span style={{ color: C.yes, fontSize: '10px', fontWeight: '700' }}>WON</span>
+                              </div>
+                              <div style={{ color: C.text3, fontSize: '11px' }}>Staked {fmtEth(i.myStake)} — Win {fmtEth(i.potentialWin)} + REP returned</div>
+                            </div>
+                            <button onClick={() => handleClaim(i.qId)} disabled={loading}
+                              style={{ padding: '10px 24px', background: C.yes, border: 'none', color: C.bg, fontSize: '13px', fontWeight: '700', borderRadius: '6px', cursor: 'pointer', fontFamily: "'JetBrains Mono', monospace", whiteSpace: 'nowrap' }}>
+                              CLAIM
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Active bets — waiting for resolution */}
+                  {active.length > 0 && (
+                    <div style={{ ...st.glass, marginTop: claimable.length > 0 ? '12px' : 0 }}>
+                      <h3 style={{ color: C.warn, fontSize: '14px', margin: '0 0 12px', letterSpacing: '1px' }}>WAITING FOR ORACLE ({active.length})</h3>
+                      <div style={{ display: 'grid', gap: '8px' }}>
+                        {active.map(i => (
+                          <div key={i.qId} style={{ padding: '12px', background: C.bg, borderRadius: '10px', border: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                                <span style={{ color: C.text1, fontSize: '14px', fontWeight: '700', textTransform: 'uppercase' }}>"{i.keyword}"</span>
+                                <span style={{ color: i.pos.position === 1 ? C.yes : C.no, fontSize: '10px', fontWeight: '700', padding: '2px 6px', borderRadius: '3px', background: `${i.pos.position === 1 ? C.yes : C.no}15` }}>
+                                  {i.pos.position === 1 ? 'YES' : 'NO'}
+                                </span>
+                              </div>
+                              <div style={{ color: C.text3, fontSize: '11px' }}>{fmtEth(i.myStake)} staked — {fmtTime(i.q.windowEnd)} remaining</div>
+                            </div>
+                            <div style={{ color: C.warn, fontSize: '11px', fontWeight: '600', padding: '4px 10px', background: `${C.warn}11`, borderRadius: '4px', border: `1px solid ${C.warn}33` }}>PENDING</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Claimed wins */}
+                  {claimed.length > 0 && (
+                    <div style={{ ...st.glass, marginTop: '12px' }}>
+                      <h3 style={{ color: C.text3, fontSize: '14px', margin: '0 0 12px', letterSpacing: '1px' }}>COLLECTED ({claimed.length})</h3>
+                      <div style={{ display: 'grid', gap: '6px' }}>
+                        {claimed.map(i => (
+                          <div key={i.qId} style={{ padding: '10px 12px', background: C.bg, borderRadius: '8px', border: `1px solid ${C.yes}22`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ color: C.text2, fontSize: '12px' }}>"{i.keyword}" — <span style={{ color: C.yes }}>WON {fmtEth(i.potentialWin)}</span></span>
+                            <span style={{ color: C.yes, fontSize: '10px', fontWeight: '600' }}>COLLECTED</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Losses */}
+                  {lost.length > 0 && (
+                    <div style={{ ...st.glass, marginTop: '12px' }}>
+                      <h3 style={{ color: C.text3, fontSize: '14px', margin: '0 0 12px', letterSpacing: '1px' }}>LOSSES ({lost.length})</h3>
+                      <div style={{ display: 'grid', gap: '6px' }}>
+                        {lost.map(i => (
+                          <div key={i.qId} style={{ padding: '10px 12px', background: C.bg, borderRadius: '8px', border: `1px solid ${C.no}22`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ color: C.text3, fontSize: '12px' }}>"{i.keyword}" — {fmtEth(i.myStake)} lost</span>
+                            <span style={{ color: C.no, fontSize: '10px', fontWeight: '600' }}>LOST</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {items.length === 0 && (
+                    <div style={st.glass}>
+                      <p style={{ color: C.text3, fontSize: '12px', textAlign: 'center', margin: 0 }}>No positions yet. Go to BINGO and place your first bet!</p>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* How to Play view */}
             {view === 'howto' && (
               <div style={{ width: '100%' }}>
                 <div style={st.glass}>
                   <h3 style={{ color: C.yes, fontSize: '16px', margin: '0 0 16px', letterSpacing: '1px' }}>MENTION MARKETS — HOW IT WORKS</h3>
-                  <p style={st.guidePara}>MentionFi is a <span style={{ color: C.text1 }}>real-time information prediction market</span>. Players bet YES/NO on whether keywords will appear in live RSS news feeds within short time windows. An autonomous oracle resolves outcomes on-chain every 30 seconds. No human intervention. No disputes.</p>
+                  <p style={st.guidePara}>MentionFi is a <span style={{ color: C.text1 }}>real-time information prediction market</span>. Players bet YES/NO on whether keywords will appear in live RSS news feeds within short time windows. An autonomous oracle resolves outcomes on-chain every 15 seconds. No human intervention. No disputes.</p>
 
                   <div style={st.asciiBlock}>{`
  ┌─────────────────────────────────────────────────────┐
@@ -1037,7 +1331,7 @@ function MentionFiDashboard() {
  │    │ + 10 REP        │                  │            │
  │    │                 │                  │            │
  │    │                 │◀──scan feeds─────┤            │
- │    │                 │  every 30 sec    │            │
+ │    │                 │  every 15 sec    │            │
  │    │                 │                  │            │
  │    │                 │ "bitcoin" found  │            │
  │    │                 │ in CoinDesk RSS  │            │
@@ -1580,10 +1874,10 @@ function MentionFiDashboard() {
                   {/* Scan cycle progress */}
                   <div style={{ marginBottom: '4px', display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: C.text3 }}>
                     <span>NEXT SCAN</span>
-                    <span>{30 - scanProgress}s</span>
+                    <span>{15 - scanProgress}s</span>
                   </div>
                   <div style={{ height: '3px', borderRadius: '2px', background: C.border, overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${(scanProgress / 30) * 100}%`, background: C.yes, borderRadius: '2px', transition: 'width 1s linear' }} />
+                    <div style={{ height: '100%', width: `${(scanProgress / 15) * 100}%`, background: C.yes, borderRadius: '2px', transition: 'width 1s linear' }} />
                   </div>
                 </div>
 
@@ -1620,15 +1914,40 @@ function MentionFiDashboard() {
           </>
         )}
 
-        {error && (() => {
-          const isSuccess = error.startsWith('CLAIMED!');
-          const col = isSuccess ? C.yes : C.no;
+        {/* Legacy error display (kept for backward compat) */}
+        {error && !error.startsWith('CLAIMED!') && (
+          <div style={{ color: C.no, fontSize: '13px', marginTop: '16px', padding: '12px', background: `${C.no}11`, borderRadius: '8px', border: `1px solid ${C.no}33`, maxWidth: '700px', width: '100%', textAlign: 'center' }}>
+            {error.length > 200 ? error.slice(0, 200) + '...' : error}
+          </div>
+        )}
+      </div>
+
+      {/* Toast notifications — floating overlay */}
+      <div style={{ position: 'fixed', top: '16px', right: '16px', zIndex: 9999, display: 'flex', flexDirection: 'column', gap: '8px', maxWidth: '380px', width: '100%', pointerEvents: 'none' }}>
+        {toasts.map((toast, i) => {
+          const colors = { success: C.yes, error: C.no, warning: C.warn, info: C.info };
+          const icons = { success: '\u2713', error: '\u2717', warning: '\u26A0', info: '\u2139' };
+          const tc = colors[toast.type] || C.info;
           return (
-            <div style={{ color: col, fontSize: '13px', marginTop: '16px', padding: '12px', background: `${col}11`, borderRadius: '8px', border: `1px solid ${col}33`, maxWidth: '700px', width: '100%', textAlign: 'center' }}>
-              {error.length > 200 ? error.slice(0, 200) + '...' : error}
+            <div key={toast.id} className="toast-slide-in" style={{
+              background: C.surface, border: `1px solid ${tc}66`, borderLeft: `4px solid ${tc}`,
+              borderRadius: '8px', padding: '12px 16px', backdropFilter: 'blur(12px)',
+              boxShadow: `0 4px 24px rgba(0,0,0,0.6), 0 0 20px ${tc}22`,
+              pointerEvents: 'auto', cursor: 'pointer',
+              animation: 'toastSlideIn 0.3s ease-out',
+            }} onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: toast.message ? '4px' : 0 }}>
+                <span style={{ color: tc, fontSize: '16px', fontWeight: '700' }}>{icons[toast.type]}</span>
+                <span style={{ color: tc, fontSize: '13px', fontWeight: '700', letterSpacing: '0.5px' }}>{toast.title}</span>
+              </div>
+              {toast.message && (
+                <div style={{ color: C.text2, fontSize: '11px', lineHeight: '1.5', paddingLeft: '24px' }}>
+                  {toast.message.length > 200 ? toast.message.slice(0, 200) + '...' : toast.message}
+                </div>
+              )}
             </div>
           );
-        })()}
+        })}
       </div>
     </div>
   );
@@ -1848,15 +2167,21 @@ globalStyles.textContent = `
   @keyframes ticker { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
   @keyframes flashIn { 0% { background: rgba(0,255,136,0.15); } 100% { background: transparent; } }
+  @keyframes toastSlideIn { 0% { transform: translateX(100%); opacity: 0; } 100% { transform: translateX(0); opacity: 1; } }
+  @keyframes glowPulse { 0%, 100% { box-shadow: 0 0 8px rgba(0,255,136,0.3); } 50% { box-shadow: 0 0 20px rgba(0,255,136,0.6); } }
+  @keyframes scanLine { 0% { left: 0%; } 100% { left: 100%; } }
+  @keyframes urgentPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+  @keyframes countdownGlow { 0%, 100% { text-shadow: 0 0 10px currentColor; } 50% { text-shadow: 0 0 30px currentColor, 0 0 60px currentColor; } }
   @media (max-width: 600px) {
     .pulse-depth { display: none !important; }
     .pulse-header, .pulse-row { grid-template-columns: 70px 1fr 70px !important; }
   }
-  button:hover { opacity: 0.85; }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button:hover { opacity: 0.85; transform: scale(1.02); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  button { transition: all 0.15s ease; }
   select { appearance: none; }
   input::placeholder { color: ${C.text3}; }
-  input:focus, select:focus { outline: none; border-color: ${C.info}; animation: borderBlink 1s step-end infinite; }
+  input:focus, select:focus { outline: none; border-color: ${C.info}; box-shadow: 0 0 12px ${C.info}44; }
   @keyframes borderBlink { 0%, 100% { border-right-color: ${C.yes}; } 50% { border-right-color: transparent; } }
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: ${C.bg}; }
