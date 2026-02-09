@@ -561,6 +561,7 @@ function MentionFiDashboard() {
                 { key: 'create', label: '+ CREATE' },
                 { key: 'portfolio', label: 'MY BETS' },
                 { key: 'howto', label: 'HOW TO PLAY' },
+                { key: 'about', label: 'ABOUT' },
                 { key: 'oracle', label: 'ORACLE' },
               ].map(t => (
                 <button key={t.key} onClick={() => setView(t.key)} style={{ ...(view === t.key ? st.tabActive : st.tab), flexShrink: 0 }}>
@@ -1269,6 +1270,238 @@ function MentionFiDashboard() {
  Losers:  ETH + REP forfeited
  Creators: 5% always (win or lose)
 `}</div>
+                </div>
+              </div>
+            )}
+
+            {/* ABOUT view */}
+            {view === 'about' && (
+              <div style={{ width: '100%' }}>
+                <div style={st.glass}>
+                  <h3 style={{ color: C.yes, fontSize: '16px', margin: '0 0 16px', letterSpacing: '1px' }}>WHAT IS MENTIONFI</h3>
+                  <p style={st.guidePara}>MentionFi is a <span style={{ color: C.text1 }}>real-time information prediction market</span> on MegaETH. Players bet on whether specific keywords will appear in live RSS news feeds within short time windows — 10 to 60 minutes. An autonomous oracle scans feeds every 30 seconds, resolves outcomes on-chain, and distributes winnings automatically. No human intervention. No disputes. Pure information markets.</p>
+                  <p style={st.guidePara}>Not "will Bitcoin hit $100k" — but <span style={{ color: C.yes }}>"will the word 'bitcoin' appear in CoinDesk's RSS feed in the next 30 minutes."</span> Verifiable. Binary. Fast.</p>
+                </div>
+
+                <div style={st.glass}>
+                  <h3 style={{ color: C.warn, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>WHY NOW</h3>
+                  <p style={st.guidePara}>Prediction markets just had their breakout moment. <span style={{ color: C.text1 }}>Polymarket + Kalshi combined for $44B+ trading volume in 2025</span> — up from $9B on Polymarket alone in 2024. Kalshi won its CFTC court battle in 2024, legitimizing event contracts in the US. The regulatory ice is thawing.</p>
+                  <p style={st.guidePara}><span style={{ color: C.text1 }}>AI agents are already here.</span> Automated trading bots extracted $40M+ in arbitrage profits from prediction markets between April 2024 and April 2025. Market makers on Polymarket earned $20M+ in 2024. The next wave isn't humans vs humans — it's agents alongside humans, competing on information speed.</p>
+                  <p style={st.guidePara}><span style={{ color: C.text1 }}>MegaETH launched mainnet February 9, 2026</span> — 10ms blocks, 100K+ TPS. For the first time, an EVM chain is fast enough for real-time prediction markets. No more waiting 12 seconds per block. Create a market, place a bet, and see it confirmed in milliseconds.</p>
+                  <p style={st.guidePara}>RSS feeds as oracle data: <span style={{ color: C.text1 }}>public, verifiable, machine-readable, and updated every 2-30 minutes</span>. No opaque data sources. Anyone can check the feed. The oracle's resolution logic is deterministic — scan the XML, match the keyword, resolve on-chain.</p>
+                </div>
+
+                <div style={st.glass}>
+                  <h3 style={{ color: C.info, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>WHY LIKE THIS</h3>
+                  <h4 style={st.guideHeading}>PARIMUTUEL SYSTEM</h4>
+                  <p style={st.guidePara}>MentionFi uses a <span style={{ color: C.text1 }}>dynamic parimutuel mechanism</span> (Pennock, 2004). All bets pool together. Winners split losers' stakes proportionally. No market maker needed. No order book to maintain. The system is always liquid from the first bet — infinite buy-in, zero institutional risk.</p>
+                  <p style={st.guidePara}>Unlike LMSR (Hanson, 2003) which requires a subsidized market maker, parimutuel markets are <span style={{ color: C.text1 }}>self-funding</span>. The house doesn't take a position. Players bet against each other. Natural price discovery emerges from the ratio of YES/NO stakes.</p>
+
+                  <h4 style={st.guideHeading}>SHORT TIME WINDOWS</h4>
+                  <p style={st.guidePara}>10 to 60 minute windows aren't arbitrary. Ottaviani & Sorensen's timing theory shows that in short-duration markets, <span style={{ color: C.text1 }}>the dominant strategy is to bet your true belief early</span>. There's no value in waiting for smarter traders — the oracle resolves before late information changes outcomes. This creates honest, fast-moving markets.</p>
+
+                  <h4 style={st.guideHeading}>SOULBOUND REP</h4>
+                  <p style={st.guidePara}>REP is an EIP-6909 multi-token — <span style={{ color: C.text1 }}>non-transferable</span>. You can't buy reputation, only earn it through correct predictions. This is Sybil resistance through skin in the game. Creating a fresh wallet doesn't give you the credibility that 500+ REP signals.</p>
+
+                  <h4 style={st.guideHeading}>RSS ORACLE</h4>
+                  <p style={st.guidePara}>The oracle scans public RSS feeds — the same XML that every news reader, aggregator, and bot can access. <span style={{ color: C.text1 }}>No proprietary data. No API keys. No trust assumptions beyond "does the feed exist."</span> Anyone can independently verify resolution by checking the same feed the oracle checked.</p>
+                </div>
+
+                <div style={st.glass}>
+                  <h3 style={{ color: C.yes, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>GAME THEORY</h3>
+                  <p style={st.guidePara}>In parimutuel markets, the Nash equilibrium converges on <span style={{ color: C.text1 }}>truthful revelation</span> (Watanabe, 1997). When you can only bet one side and the payout is proportional to your stake relative to the winning pool, misrepresenting your beliefs strictly reduces your expected return.</p>
+                  <div style={st.asciiBlock}>{`
+ NASH EQUILIBRIUM IN MENTIONFI
+ ══════════════════════════════
+
+ Given: You believe P(YES) = 70%
+
+ Strategy A: Bet YES (truthful)
+ → Expected value = 0.7 × (your share of YES pool)
+   Maximized when pool reflects true odds
+
+ Strategy B: Bet NO (bluff)
+ → Expected value = 0.3 × (your share of NO pool)
+   Strictly worse unless you can move the market
+   AND bet again — but one-bet-per-quest prevents this
+
+ Strategy C: Don't bet
+ → Expected value = 0
+
+ Dominant strategy: BET YOUR TRUE BELIEF EARLY
+ The one-bet constraint + short windows + proportional
+ payout = truthful revelation is strictly optimal.
+`}</div>
+                  <p style={st.guidePara}><span style={{ color: C.text1 }}>Hayek's information hierarchy (1945)</span> explains why this works: dispersed knowledge that exists nowhere in totality can be aggregated through price signals. Each bettor contributes a fragment — their read on news cycles, feed update speeds, keyword likelihood — and the market price synthesizes it all.</p>
+                  <p style={st.guidePara}><span style={{ color: C.text1 }}>Surowiecki's "Wisdom of Crowds" (2004)</span> identifies four conditions for accurate crowd predictions: diversity of opinion, independence, decentralization, and aggregation. MentionFi satisfies all four — diverse players, independent wallets, decentralized blockchain, parimutuel aggregation.</p>
+                </div>
+
+                <div style={st.glass}>
+                  <h3 style={{ color: C.warn, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>ACADEMIC FOUNDATIONS</h3>
+                  <p style={st.guidePara}>MentionFi's design draws from 20+ years of prediction market research. Key papers:</p>
+                  <div style={st.asciiBlock}>{`
+ CORE LITERATURE
+ ═══════════════
+
+ Arrow et al. (2008)
+ "The Promise of Prediction Markets"
+ Science, Vol 320, Issue 5878, pp. 877-878
+ → Prediction markets as research tools
+ → Should be freed of regulatory barriers
+
+ Wolfers & Zitzewitz (2004)
+ "Prediction Markets"
+ Journal of Economic Perspectives, 18(2): 107-126
+ → Market-generated forecasts outperform
+   moderately sophisticated benchmarks
+ → Contract design shapes information extraction
+
+ Berg, Nelson & Rietz (2008)
+ "Prediction Market Accuracy in the Long Run"
+ International Journal of Forecasting, 24(2): 285-300
+ → Iowa Electronic Markets beat polls 74% of time
+ → Long-run accuracy validates the mechanism
+
+ Pennock (2004)
+ "A Dynamic Pari-Mutuel Market for Hedging,
+  Wagering, and Information Aggregation"
+ ACM Conference on Electronic Commerce (EC '04)
+ → Hybrid parimutuel-CDA mechanism
+ → Infinite liquidity + dynamic pricing
+
+ Hanson (2003, 2007)
+ "Logarithmic Market Scoring Rules for Modular
+  Combinatorial Information Aggregation"
+ Journal of Prediction Markets, 1(1): 3-15
+ → LMSR — the dominant AMM for prediction markets
+ → MentionFi uses parimutuel instead (self-funding)
+
+ Fama (1970)
+ "Efficient Capital Markets: A Review of Theory
+  and Empirical Work"
+ Journal of Finance, 25(2): 383-417
+ → Efficient Market Hypothesis
+ → Prices reflect available information
+ → MentionFi tests this at 10-60 min resolution
+`}</div>
+                </div>
+
+                <div style={st.glass}>
+                  <h3 style={{ color: C.info, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>METHODOLOGY</h3>
+                  <div style={st.asciiBlock}>{`
+ ┌─────────────────────────────────────────────────────┐
+ │              MENTIONFI ARCHITECTURE                  │
+ │                                                     │
+ │  PLAYERS          MEGAETH          ORACLE (24/7)    │
+ │  ═══════          ═══════          ════════════     │
+ │    │                 │                  │            │
+ │    ├─create quest───▶│                  │            │
+ │    │ keyword+feed    │                  │            │
+ │    │ + time window   │                  │            │
+ │    │                 │                  │            │
+ │    ├─bet YES/NO─────▶│                  │            │
+ │    │ ETH + 10 REP    │                  │            │
+ │    │                 │                  │            │
+ │    │                 │◀──scan feeds─────┤            │
+ │    │                 │  every 30 sec    │            │
+ │    │                 │                  │            │
+ │    │                 │  keyword found?  │            │
+ │    │                 │  YES → resolve   │            │
+ │    │                 │  expired → NO    │            │
+ │    │                 │                  │            │
+ │    ├─claimReward()──▶│                  │            │
+ │    │◀── ETH + REP ──┤                  │            │
+ └─────────────────────────────────────────────────────┘
+`}</div>
+
+                  <h4 style={st.guideHeading}>FEE STRUCTURE</h4>
+                  <div style={st.asciiBlock}>{`
+ LOSING POOL DISTRIBUTION
+ ════════════════════════
+
+ ┌───────────────────────────────────┐
+ │   5%  Protocol    (treasury)     │
+ │   5%  Creator     (quest maker)  │
+ │  90%  Winners     (proportional) │
+ └───────────────────────────────────┘
+
+ Winners: original stake returned + 90% of losers' pool
+ Creator: 5% regardless of outcome (incentivizes markets)
+ Protocol: 5% sustains infrastructure + oracle gas
+`}</div>
+
+                  <h4 style={st.guideHeading}>REP LIFECYCLE</h4>
+                  <div style={st.asciiBlock}>{`
+ ┌────────────────────────────────────┐
+ │ Register  → +100 REP (starting)   │
+ │ Bet       → -10 REP  (staked)     │
+ │ Win       → +10 REP  (returned)   │
+ │           → +bonus   (from pool)  │
+ │ Lose      → -10 REP  (forfeited)  │
+ │                                    │
+ │ REP GATES                          │
+ │ ─────────                          │
+ │ 0 REP    → cannot bet             │
+ │ 100 REP  → standard player        │
+ │ 200+ REP → 1 custom keyword slot  │
+ │ 300+ REP → 2 custom keyword slots │
+ │ 500+ REP → 5 custom keyword slots │
+ └────────────────────────────────────┘
+`}</div>
+
+                  <h4 style={st.guideHeading}>ORACLE RESOLUTION FLOW</h4>
+                  <div style={st.asciiBlock}>{`
+ Every 30 seconds, for each open quest:
+ ┌──────────────────────────────────────┐
+ │ 1. Is quest window expired?         │
+ │    YES → resolve as NO (timeout)    │
+ │    NO  → continue to step 2        │
+ │                                      │
+ │ 2. Fetch RSS XML from source URL    │
+ │    Parse all <item> titles + desc   │
+ │                                      │
+ │ 3. Case-insensitive keyword search  │
+ │    across all parsed text           │
+ │                                      │
+ │ 4. Match found?                     │
+ │    YES → resolve as YES on-chain    │
+ │    NO  → wait, rescan next cycle    │
+ └──────────────────────────────────────┘
+
+ Resolution = on-chain transaction
+ Immutable. Verifiable. Deterministic.
+`}</div>
+                </div>
+
+                <div style={st.glass}>
+                  <h3 style={{ color: C.text1, fontSize: '14px', margin: '0 0 14px', letterSpacing: '1px' }}>RULES</h3>
+
+                  <h4 style={st.guideHeading}>REGISTRATION</h4>
+                  <p style={st.guidePara}>Connect a wallet. Call <span style={{ color: C.yes }}>register()</span> on the ReputationToken contract. Receive 100 REP. One registration per wallet address. REP is soulbound (EIP-6909) — non-transferable.</p>
+
+                  <h4 style={st.guideHeading}>QUEST CREATION</h4>
+                  <p style={st.guidePara}>Any registered player can create a quest by specifying: <span style={{ color: C.text1 }}>keyword</span> (any string), <span style={{ color: C.text1 }}>RSS feed source</span> (from the approved feed list), and <span style={{ color: C.text1 }}>time window</span> (10 min / 30 min / 1 hour). The keyword is hashed on-chain (keccak256). The Bingo tab generates round-aligned quests with 30-min windows automatically.</p>
+
+                  <h4 style={st.guideHeading}>BETTING</h4>
+                  <p style={st.guidePara}><span style={{ color: C.text1 }}>One position per quest.</span> Choose YES or NO. Stake minimum 0.001 ETH + 10 REP. No hedging — you pick a side and commit. Odds display as the ratio of YES/NO ETH pools. You can bet any time before the quest window expires or is resolved.</p>
+
+                  <h4 style={st.guideHeading}>RESOLUTION</h4>
+                  <p style={st.guidePara}>The oracle runs 24/7. Every 30 seconds it checks all open quests. If the keyword appears in the specified RSS feed's titles or descriptions → <span style={{ color: C.yes }}>resolved YES</span>. If the time window expires with no match → <span style={{ color: C.no }}>resolved NO</span>. Resolution is an on-chain transaction signed by the oracle wallet. Immutable.</p>
+
+                  <h4 style={st.guideHeading}>CLAIMING REWARDS</h4>
+                  <p style={st.guidePara}>After resolution, winning side calls <span style={{ color: C.yes }}>claimReward()</span>. You receive: your original ETH stake back + your proportional share of 90% of the losing pool + your REP stake returned + bonus REP from the losing pool. Losers forfeit their ETH and REP stakes.</p>
+
+                  <h4 style={st.guideHeading}>CUSTOM KEYWORDS</h4>
+                  <p style={st.guidePara}>Custom keyword creation is gated by REP to prevent spam. <span style={{ color: C.text1 }}>200+ REP: 1 slot. 300+ REP: 2 slots. 500+ REP: 5 slots.</span> The Bingo grid keywords rotate every 30-minute round and are available to all players.</p>
+
+                  <h4 style={st.guideHeading}>DISQUALIFICATION CONDITIONS</h4>
+                  <p style={st.guidePara}>None. There is no disqualification. The system is permissionless. If you have REP and ETH, you can play. If your REP hits 0, you can't bet until you earn more (there is no mechanism to earn REP without betting — you'd need a new wallet).</p>
+                </div>
+
+                <div style={{ ...st.glass, background: `${C.surface}88` }}>
+                  <p style={{ color: C.text3, fontSize: '10px', lineHeight: '1.6', margin: 0 }}>
+                    MentionFi is experimental software on MegaETH testnet. Not financial advice. No real value at risk (testnet ETH). Built by <span style={{ color: C.text2 }}>Exhuman</span> as an exploration of information markets, attention economics, and AI-native prediction protocols.
+                  </p>
                 </div>
               </div>
             )}
