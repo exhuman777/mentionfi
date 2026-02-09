@@ -62,6 +62,7 @@ interface CachedQuest {
   id: number;
   creator: string;
   keywordHash: string;
+  keyword?: string;
   sourceUrl: string;
   windowStart: number;
   windowEnd: number;
@@ -272,10 +273,18 @@ class MentionFiOracle {
           const noOdds =
             totalEth > 0n ? Number((noEth * 10000n) / totalEth) / 100 : 50;
 
+          // Reverse lookup keyword from cache
+          const kwHash: string = q[2];
+          let keyword: string | undefined;
+          for (const [kw, h] of this.keywordCache.entries()) {
+            if (h === kwHash) { keyword = kw; break; }
+          }
+
           quests.push({
             id: Number(q[0]),
             creator: q[1],
             keywordHash: q[2],
+            keyword,
             sourceUrl: q[3],
             windowStart: Number(q[4]),
             windowEnd: Number(q[5]),
@@ -352,6 +361,44 @@ class MentionFiOracle {
     } catch (error) {
       this.logError(`Error fetching RSS feed ${feedUrl}:`, error);
       return { found: false, proof: ethers.ZeroHash };
+    }
+  }
+
+  /**
+   * Discover keywords from on-chain QuestCreated events by decoding tx calldata
+   */
+  async discoverKeywordsFromChain(): Promise<void> {
+    try {
+      const questCount = Number(await this.questContract.questCount());
+      if (questCount === 0) return;
+
+      this.log(`Discovering keywords from ${questCount} on-chain quests...`);
+      const iface = new ethers.Interface([
+        "function createQuest(string keyword, string sourceUrl, uint64 windowStart, uint64 windowEnd) external returns (uint256)",
+      ]);
+
+      // Get QuestCreated events
+      const filter = this.questContract.filters.QuestCreated();
+      const events = await this.questContract.queryFilter(filter, 0, "latest");
+
+      for (const event of events) {
+        try {
+          const tx = await this.provider.getTransaction(event.transactionHash);
+          if (!tx) continue;
+          const decoded = iface.decodeFunctionData("createQuest", tx.data);
+          const keyword = decoded[0] as string;
+          const hash = ethers.keccak256(ethers.toUtf8Bytes(keyword));
+          if (!this.keywordCache.has(keyword.toLowerCase())) {
+            this.keywordCache.set(keyword.toLowerCase(), hash);
+            this.log(`Discovered keyword: "${keyword}" => ${hash.slice(0, 18)}...`);
+          }
+        } catch {
+          // Skip events we can't decode
+        }
+      }
+      this.log(`Keyword cache now has ${this.keywordCache.size} entries`);
+    } catch (error) {
+      this.logError("Failed to discover keywords from chain:", error);
     }
   }
 
@@ -472,6 +519,9 @@ class MentionFiOracle {
   async run(intervalMs: number = 30000): Promise<void> {
     this.log("=== MentionFi Oracle Started ===");
     this.log(`Checking every ${intervalMs / 1000}s`);
+
+    // Discover keywords from on-chain history (fills gaps from custom quests)
+    await this.discoverKeywordsFromChain();
 
     const tick = async () => {
       this.stats.lastCheck = new Date();

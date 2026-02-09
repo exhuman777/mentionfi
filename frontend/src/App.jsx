@@ -154,16 +154,31 @@ function MentionFiDashboard() {
     try {
       // Supplement keyword map from oracle (catches custom keywords from other users)
       try {
-        const kwRes = await fetch(`${ORACLE_API}/api/v1/keywords`);
-        if (kwRes.ok) {
-          const kwJson = await kwRes.json();
-          if (kwJson.success && kwJson.data) {
-            setKeywordMap(prev => {
-              const merged = { ...prev, ...kwJson.data };
-              localStorage.setItem('mentionfi_keywords', JSON.stringify(merged));
-              return merged;
-            });
+        const [kwRes, questsRes] = await Promise.allSettled([
+          fetch(`${ORACLE_API}/api/v1/keywords`),
+          fetch(`${ORACLE_API}/api/v1/quests?limit=100`),
+        ]);
+        const newMappings = {};
+        // From keyword map endpoint
+        if (kwRes.status === 'fulfilled' && kwRes.value.ok) {
+          const kwJson = await kwRes.value.json();
+          if (kwJson.success && kwJson.data) Object.assign(newMappings, kwJson.data);
+        }
+        // From quest data (oracle discovers keywords from on-chain tx calldata)
+        if (questsRes.status === 'fulfilled' && questsRes.value.ok) {
+          const qJson = await questsRes.value.json();
+          if (qJson.success && Array.isArray(qJson.data)) {
+            for (const q of qJson.data) {
+              if (q.keyword && q.keywordHash) newMappings[q.keywordHash] = q.keyword;
+            }
           }
+        }
+        if (Object.keys(newMappings).length > 0) {
+          setKeywordMap(prev => {
+            const merged = { ...prev, ...newMappings };
+            localStorage.setItem('mentionfi_keywords', JSON.stringify(merged));
+            return merged;
+          });
         }
       } catch (e) { /* oracle unreachable — built-in keyword list still works */ }
 
