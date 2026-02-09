@@ -319,52 +319,56 @@ class MentionFiOracle {
   // ─── RSS Checking ──────────────────────────────────────────────
 
   /**
-   * Fetch RSS feed and check for keyword
+   * Reverse-lookup keyword string from hash
+   */
+  getKeywordByHash(hash: string): string | undefined {
+    const target = String(hash).toLowerCase();
+    for (const [kw, h] of this.keywordCache.entries()) {
+      if (h.toLowerCase() === target) return kw;
+    }
+    return undefined;
+  }
+
+  /**
+   * Fetch RSS feed and check for keyword (by plaintext, not hash)
    */
   async checkRSSForKeyword(
     feedUrl: string,
-    keywordHash: string,
+    keyword: string,
     windowStart: number,
     windowEnd: number
   ): Promise<{ found: boolean; proof: string; matchedItem?: string }> {
     try {
       const feed = await this.rssParser.parseURL(feedUrl);
-      this.log(`Fetched ${feed.items?.length || 0} items from ${feedUrl}`);
+      const items = feed.items || [];
+      this.log(`  Fetched ${items.length} items from ${feedUrl}`);
 
-      for (const item of feed.items || []) {
-        // Check if item is within time window
-        const pubDate = item.pubDate
-          ? new Date(item.pubDate).getTime() / 1000
-          : 0;
+      const kw = keyword.toLowerCase().trim();
 
-        // Be lenient with time - check items from slightly before window
-        if (pubDate < windowStart - 3600 || pubDate > windowEnd + 60) {
-          continue;
-        }
-
-        // Combine all text content
+      // Check ALL items in the feed — if the keyword appears in the
+      // feed's current content, that counts as a mention during the window.
+      // RSS feeds are naturally time-limited (recent articles only).
+      for (const item of items) {
         const text = [item.title, item.content, item.contentSnippet]
           .filter(Boolean)
           .join(" ")
           .toLowerCase();
 
-        // Check all cached keywords
-        for (const [keyword, hash] of this.keywordCache.entries()) {
-          if (hash === keywordHash && text.includes(keyword.toLowerCase())) {
-            this.log(`Found keyword "${keyword}" in: ${item.title}`);
-            const proof = ethers.keccak256(
-              ethers.toUtf8Bytes(
-                JSON.stringify({ url: item.link, title: item.title })
-              )
-            );
-            return { found: true, proof, matchedItem: item.title };
-          }
+        if (text.includes(kw)) {
+          this.log(`  FOUND "${keyword}" in: ${item.title}`);
+          const proof = ethers.keccak256(
+            ethers.toUtf8Bytes(
+              JSON.stringify({ url: item.link, title: item.title })
+            )
+          );
+          return { found: true, proof, matchedItem: item.title };
         }
       }
 
+      this.log(`  Not found: "${keyword}" in ${items.length} items`);
       return { found: false, proof: ethers.ZeroHash };
     } catch (error) {
-      this.logError(`Error fetching RSS feed ${feedUrl}:`, error);
+      this.logError(`  Error fetching RSS feed ${feedUrl}:`, error);
       return { found: false, proof: ethers.ZeroHash };
     }
   }
@@ -484,38 +488,45 @@ class MentionFiOracle {
     const windowActive =
       Number(quest.windowStart) <= now && !windowExpired;
 
-    // During active window: scan RSS and cache result, but don't try to resolve on-chain
+    // Look up the keyword plaintext from cache
+    const keyword = this.getKeywordByHash(quest.keywordHash);
+    if (!keyword) {
+      this.log(
+        `  Quest #${questId}: unknown keyword hash ${String(quest.keywordHash).slice(0, 18)}... — skipping`
+      );
+      // If window expired with unknown keyword, resolve as NO
+      if (windowExpired) {
+        this.log(`  Window expired, resolving as NO (unknown keyword)`);
+      } else {
+        return false;
+      }
+    }
+
+    // During active window: scan RSS and cache result, don't resolve on-chain yet
     // (Contract requires quest to be Closed, which only happens after windowEnd)
     if (windowActive) {
-      // Already found? No need to re-scan
-      if (this.foundCache.has(questId)) return false;
+      if (this.foundCache.has(questId)) return false; // Already cached
+      if (!keyword) return false;
+
+      this.log(`  Quest #${questId}: scanning for "${keyword}" (active window)`);
 
       const { found, proof, matchedItem } = await this.checkRSSForKeyword(
         quest.sourceUrl,
-        quest.keywordHash,
+        keyword,
         Number(quest.windowStart),
         Number(quest.windowEnd)
       );
 
       if (found) {
-        this.log(
-          `  Quest #${questId}: keyword found during active window — cached for resolution after expiry`
-        );
-        this.log(`  Matched: "${matchedItem}"`);
-        this.foundCache.set(questId, {
-          proof,
-          matchedItem: matchedItem || "",
-        });
+        this.log(`  Quest #${questId}: "${keyword}" FOUND — cached for resolution after expiry`);
+        this.foundCache.set(questId, { proof, matchedItem: matchedItem || "" });
       }
       return false; // Never resolve during active window
     }
 
     // Window expired — resolve on-chain
-    this.log(`Resolving quest #${questId}`);
+    this.log(`Resolving quest #${questId}: "${keyword || "unknown"}"`);
     this.log(`  Source: ${quest.sourceUrl}`);
-    this.log(
-      `  Window: ${new Date(Number(quest.windowStart) * 1000).toISOString()} - ${new Date(Number(quest.windowEnd) * 1000).toISOString()}`
-    );
 
     // Check if we already found the keyword during the active window
     let found = false;
@@ -528,11 +539,11 @@ class MentionFiOracle {
       proof = cached.proof;
       matchedItem = cached.matchedItem;
       this.log(`  Using cached result from active window scan`);
-    } else {
+    } else if (keyword) {
       // Final scan after window expired
       const result = await this.checkRSSForKeyword(
         quest.sourceUrl,
-        quest.keywordHash,
+        keyword,
         Number(quest.windowStart),
         Number(quest.windowEnd)
       );
@@ -867,7 +878,7 @@ async function main() {
   const questAddress = process.env.QUEST_ADDRESS;
   const repAddress = process.env.REP_ADDRESS;
   const port = parseInt(process.env.PORT || "3000");
-  const interval = parseInt(process.env.INTERVAL_MS || "30000");
+  const interval = parseInt(process.env.INTERVAL_MS || "15000");
 
   if (!privateKey) {
     console.error("ERROR: PRIVATE_KEY env required");

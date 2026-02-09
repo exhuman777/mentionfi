@@ -49,6 +49,7 @@ const RSS_FEEDS = [
 ];
 
 const DURATION_PRESETS = [
+  { label: '5 min', value: 300 },
   { label: '10 min', value: 600 },
   { label: '30 min', value: 1800 },
   { label: '1 hour', value: 3600 },
