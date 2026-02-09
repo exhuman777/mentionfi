@@ -274,9 +274,11 @@ class MentionFiOracle {
             totalEth > 0n ? Number((noEth * 10000n) / totalEth) / 100 : 50;
 
           // Reverse lookup keyword from cache
-          const kwHash: string = q[2];
-          const kwMap = this.getKeywordMap();
-          const keyword: string | undefined = kwMap[kwHash];
+          const kwHash = String(q[2]).toLowerCase();
+          let keyword: string | undefined;
+          for (const [kw, h] of this.keywordCache.entries()) {
+            if (h.toLowerCase() === kwHash) { keyword = kw; break; }
+          }
 
           quests.push({
             id: Number(q[0]),
