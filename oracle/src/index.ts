@@ -104,9 +104,16 @@ class MentionFiOracle {
   private keywordCache: Map<string, string> = new Map();
 
   // Cache for quests where keyword was found during active window
-  // questId → { proof, matchedItem }
-  private foundCache: Map<number, { proof: string; matchedItem: string }> =
-    new Map();
+  // questId → { proof, matchedItem, articleId }
+  private foundCache: Map<
+    number,
+    { proof: string; matchedItem: string; articleId: string }
+  > = new Map();
+
+  // Track articles already used as proof for quest resolution.
+  // Each article can only resolve ONE quest (prevents gaming).
+  // Key = article identifier (URL or title+pubDate fingerprint)
+  private usedArticles: Set<string> = new Set();
 
   // API quest cache (refreshed every tick)
   private questCache: CachedQuest[] = [];
@@ -330,42 +337,103 @@ class MentionFiOracle {
   }
 
   /**
-   * Fetch RSS feed and check for keyword (by plaintext, not hash)
+   * Fetch RSS feed and check for keyword in articles published during the window.
+   *
+   * GAME DESIGN — "Will a NEW article containing [keyword] be published
+   * on [feed] during [window]?"
+   *
+   * Rules:
+   * 1. Only articles with pubDate >= windowStart count (forward-looking)
+   * 2. Articles without pubDate are skipped (can't verify freshness)
+   * 3. Each article can only resolve ONE quest (usedArticles dedup)
+   * 4. This creates genuine uncertainty — predicting future news events
+   *
+   * Difficulty spectrum:
+   *   "bitcoin" on Cointelegraph, 30min → ~50% YES (coin flip)
+   *   "trump" on CryptoSlate, 30min    → ~2% YES  (underdog)
+   *   "megaeth" on Hacker News, 1hr    → ~1% YES  (moonshot)
+   *
+   * Production: 100+ feeds + Twitter = fresh content every minute,
+   * making even 5-min windows viable.
    */
   async checkRSSForKeyword(
     feedUrl: string,
     keyword: string,
     windowStart: number,
-    windowEnd: number
-  ): Promise<{ found: boolean; proof: string; matchedItem?: string }> {
+    windowEnd: number,
+    questId?: number
+  ): Promise<{
+    found: boolean;
+    proof: string;
+    matchedItem?: string;
+    articleId?: string;
+  }> {
     try {
       const feed = await this.rssParser.parseURL(feedUrl);
       const items = feed.items || [];
-      this.log(`  Fetched ${items.length} items from ${feedUrl}`);
 
       const kw = keyword.toLowerCase().trim();
+      let tooOld = 0;
+      let noDate = 0;
+      let alreadyUsed = 0;
+      let checked = 0;
 
-      // Check ALL items in the feed — if the keyword appears in the
-      // feed's current content, that counts as a mention during the window.
-      // RSS feeds are naturally time-limited (recent articles only).
       for (const item of items) {
+        // Parse publication date
+        const pubDate = item.pubDate
+          ? Math.floor(new Date(item.pubDate).getTime() / 1000)
+          : 0;
+
+        // Rule 1: Skip articles without pubDate (can't verify freshness)
+        if (pubDate === 0 || isNaN(pubDate)) {
+          noDate++;
+          continue;
+        }
+
+        // Rule 2: Only articles published DURING or AFTER the window opens
+        // (players are predicting FUTURE news, not checking past data)
+        if (pubDate < windowStart) {
+          tooOld++;
+          continue;
+        }
+
+        // Rule 3: Article deduplication — each article resolves only ONE quest
+        const articleId =
+          item.link || `${item.title || ""}-${item.pubDate || ""}`;
+        if (this.usedArticles.has(articleId)) {
+          alreadyUsed++;
+          continue;
+        }
+
+        checked++;
+
+        // Check text content for keyword
         const text = [item.title, item.content, item.contentSnippet]
           .filter(Boolean)
           .join(" ")
           .toLowerCase();
 
         if (text.includes(kw)) {
-          this.log(`  FOUND "${keyword}" in: ${item.title}`);
+          this.log(
+            `  FOUND "${keyword}" in: ${item.title} (published: ${item.pubDate})`
+          );
           const proof = ethers.keccak256(
             ethers.toUtf8Bytes(
-              JSON.stringify({ url: item.link, title: item.title })
+              JSON.stringify({
+                questId: questId || 0,
+                url: item.link,
+                title: item.title,
+                pubDate: item.pubDate,
+              })
             )
           );
-          return { found: true, proof, matchedItem: item.title };
+          return { found: true, proof, matchedItem: item.title, articleId };
         }
       }
 
-      this.log(`  Not found: "${keyword}" in ${items.length} items`);
+      this.log(
+        `  Not found: "${keyword}" — ${checked} eligible, ${tooOld} pre-window, ${alreadyUsed} used, ${noDate} no-date (of ${items.length})`
+      );
       return { found: false, proof: ethers.ZeroHash };
     } catch (error) {
       this.logError(`  Error fetching RSS feed ${feedUrl}:`, error);
@@ -510,16 +578,26 @@ class MentionFiOracle {
 
       this.log(`  Quest #${questId}: scanning for "${keyword}" (active window)`);
 
-      const { found, proof, matchedItem } = await this.checkRSSForKeyword(
-        quest.sourceUrl,
-        keyword,
-        Number(quest.windowStart),
-        Number(quest.windowEnd)
-      );
+      const { found, proof, matchedItem, articleId } =
+        await this.checkRSSForKeyword(
+          quest.sourceUrl,
+          keyword,
+          Number(quest.windowStart),
+          Number(quest.windowEnd),
+          questId
+        );
 
-      if (found) {
-        this.log(`  Quest #${questId}: "${keyword}" FOUND — cached for resolution after expiry`);
-        this.foundCache.set(questId, { proof, matchedItem: matchedItem || "" });
+      if (found && articleId) {
+        this.log(
+          `  Quest #${questId}: "${keyword}" FOUND — cached for resolution after expiry`
+        );
+        // Reserve this article so no other quest can use it
+        this.usedArticles.add(articleId);
+        this.foundCache.set(questId, {
+          proof,
+          matchedItem: matchedItem || "",
+          articleId,
+        });
       }
       return false; // Never resolve during active window
     }
@@ -545,11 +623,16 @@ class MentionFiOracle {
         quest.sourceUrl,
         keyword,
         Number(quest.windowStart),
-        Number(quest.windowEnd)
+        Number(quest.windowEnd),
+        questId
       );
       found = result.found;
       proof = result.proof;
       matchedItem = result.matchedItem;
+      // Mark article as used if found
+      if (found && result.articleId) {
+        this.usedArticles.add(result.articleId);
+      }
     }
 
     const outcome = found ? Position.Yes : Position.No;

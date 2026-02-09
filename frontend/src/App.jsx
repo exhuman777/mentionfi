@@ -1316,8 +1316,9 @@ function MentionFiDashboard() {
               <div style={{ width: '100%' }}>
                 <div style={st.glass}>
                   <h3 style={{ color: C.yes, fontSize: '16px', margin: '0 0 16px', letterSpacing: '1px' }}>WHAT IS MENTIONFI</h3>
-                  <p style={st.guidePara}>MentionFi is a <span style={{ color: C.text1 }}>real-time information prediction market</span> on MegaETH. Players bet on whether specific keywords will appear in live RSS news feeds within short time windows — 10 to 60 minutes. An autonomous oracle scans feeds every 30 seconds, resolves outcomes on-chain, and distributes winnings automatically. No human intervention. No disputes. Pure information markets.</p>
-                  <p style={st.guidePara}>Not "will Bitcoin hit $100k" — but <span style={{ color: C.yes }}>"will the word 'bitcoin' appear in CoinDesk's RSS feed in the next 30 minutes."</span> Verifiable. Binary. Fast.</p>
+                  <p style={st.guidePara}>MentionFi is a <span style={{ color: C.text1 }}>forward-looking information prediction market</span> on MegaETH. Players bet on whether specific keywords will appear in <span style={{ color: C.text1 }}>NEW articles</span> published on RSS news feeds within short time windows — 5 minutes to 1 hour. An autonomous oracle scans feeds every 15 seconds, resolves outcomes on-chain, and distributes winnings automatically. No human intervention. No disputes. Pure information markets.</p>
+                  <p style={st.guidePara}>Not "will Bitcoin hit $100k" — but <span style={{ color: C.yes }}>"will a NEW article mentioning 'bitcoin' be published on Cointelegraph in the next 30 minutes?"</span> Forward-looking. Verifiable. Binary. Fast.</p>
+                  <p style={st.guidePara}>The key insight: <span style={{ color: C.text1 }}>only articles published AFTER the market opens count</span>. You can't check the feed beforehand — you're predicting future news events. Each article can only resolve one quest (no double-dipping). Difficulty = keyword frequency × feed coverage × window length.</p>
                 </div>
 
                 <div style={st.glass}>
@@ -1440,9 +1441,10 @@ function MentionFiDashboard() {
  │    │ ETH + 10 REP    │                  │            │
  │    │                 │                  │            │
  │    │                 │◀──scan feeds─────┤            │
- │    │                 │  every 30 sec    │            │
+ │    │                 │  every 15 sec    │            │
  │    │                 │                  │            │
- │    │                 │  keyword found?  │            │
+ │    │                 │  NEW article?    │            │
+ │    │                 │  + keyword found │            │
  │    │                 │  YES → resolve   │            │
  │    │                 │  expired → NO    │            │
  │    │                 │                  │            │
@@ -1488,25 +1490,34 @@ function MentionFiDashboard() {
 
                   <h4 style={st.guideHeading}>ORACLE RESOLUTION FLOW</h4>
                   <div style={st.asciiBlock}>{`
- Every 30 seconds, for each open quest:
- ┌──────────────────────────────────────┐
- │ 1. Is quest window expired?         │
- │    YES → resolve as NO (timeout)    │
- │    NO  → continue to step 2        │
- │                                      │
- │ 2. Fetch RSS XML from source URL    │
- │    Parse all <item> titles + desc   │
- │                                      │
- │ 3. Case-insensitive keyword search  │
- │    across all parsed text           │
- │                                      │
- │ 4. Match found?                     │
- │    YES → resolve as YES on-chain    │
- │    NO  → wait, rescan next cycle    │
- └──────────────────────────────────────┘
+ Every 15 seconds, for each open quest:
+ ┌─────────────────────────────────────────┐
+ │ 1. Fetch RSS feed from source URL      │
+ │    Parse all <item> with pubDate       │
+ │                                         │
+ │ 2. Filter articles:                    │
+ │    ✗ pubDate < windowStart → too old   │
+ │    ✗ No pubDate → skip (unverifiable)  │
+ │    ✗ Already used by another quest     │
+ │    ✓ Published during window → check   │
+ │                                         │
+ │ 3. Case-insensitive keyword search     │
+ │    in title + content + description    │
+ │                                         │
+ │ 4. DURING active window:              │
+ │    Found → cache result, wait for end  │
+ │    Not found → rescan next cycle       │
+ │                                         │
+ │ 5. AFTER window expires:              │
+ │    Cached YES → resolve YES on-chain   │
+ │    Final scan → resolve YES or NO      │
+ │    Article marked as "used"            │
+ └─────────────────────────────────────────┘
 
- Resolution = on-chain transaction
- Immutable. Verifiable. Deterministic.
+ Key rules:
+ • Only NEW articles count (pubDate >= windowStart)
+ • One article = one quest (no double-dipping)
+ • Resolution = immutable on-chain transaction
 `}</div>
                 </div>
 
@@ -1517,13 +1528,13 @@ function MentionFiDashboard() {
                   <p style={st.guidePara}>Connect a wallet. Call <span style={{ color: C.yes }}>register()</span> on the ReputationToken contract. Receive 100 REP. One registration per wallet address. REP is soulbound (EIP-6909) — non-transferable.</p>
 
                   <h4 style={st.guideHeading}>QUEST CREATION</h4>
-                  <p style={st.guidePara}>Any registered player can create a quest by specifying: <span style={{ color: C.text1 }}>keyword</span> (any string), <span style={{ color: C.text1 }}>RSS feed source</span> (from the approved feed list), and <span style={{ color: C.text1 }}>time window</span> (10 min / 30 min / 1 hour). The keyword is hashed on-chain (keccak256). The Bingo tab generates round-aligned quests with 30-min windows automatically.</p>
+                  <p style={st.guidePara}>Any registered player can create a quest by specifying: <span style={{ color: C.text1 }}>keyword</span> (any string), <span style={{ color: C.text1 }}>RSS feed source</span> (from the approved feed list), and <span style={{ color: C.text1 }}>time window</span> (5 / 10 / 30 min / 1 hour). The keyword is hashed on-chain (keccak256). Shorter windows = harder prediction = higher risk. The Bingo tab generates round-aligned quests with 30-min windows automatically.</p>
 
                   <h4 style={st.guideHeading}>BETTING</h4>
                   <p style={st.guidePara}><span style={{ color: C.text1 }}>One position per quest.</span> Choose YES or NO. Stake minimum 0.001 ETH + 10 REP. No hedging — you pick a side and commit. Odds display as the ratio of YES/NO ETH pools. You can bet any time before the quest window expires or is resolved.</p>
 
                   <h4 style={st.guideHeading}>RESOLUTION</h4>
-                  <p style={st.guidePara}>The oracle runs 24/7. Every 30 seconds it checks all open quests. If the keyword appears in the specified RSS feed's titles or descriptions → <span style={{ color: C.yes }}>resolved YES</span>. If the time window expires with no match → <span style={{ color: C.no }}>resolved NO</span>. Resolution is an on-chain transaction signed by the oracle wallet. Immutable.</p>
+                  <p style={st.guidePara}>The oracle runs 24/7. Every 15 seconds it checks all open quests. It only counts articles <span style={{ color: C.text1 }}>published after the quest's window opened</span> (pubDate ≥ windowStart). Each article can only resolve one quest — no double-dipping. If a NEW matching article is found → <span style={{ color: C.yes }}>resolved YES</span>. If the time window expires with no match → <span style={{ color: C.no }}>resolved NO</span>. Resolution is an immutable on-chain transaction.</p>
 
                   <h4 style={st.guideHeading}>CLAIMING REWARDS</h4>
                   <p style={st.guidePara}>After resolution, winning side calls <span style={{ color: C.yes }}>claimReward()</span>. You receive: your original ETH stake back + your proportional share of 90% of the losing pool + your REP stake returned + bonus REP from the losing pool. Losers forfeit their ETH and REP stakes.</p>
