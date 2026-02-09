@@ -210,14 +210,14 @@ Every 15s tick:
 
 ### Create a Quest
 ```bash
-KEYWORD_HASH=$(cast keccak "bitcoin")
 FEED_URL="https://cointelegraph.com/rss"
-WINDOW_START=$(($(cast block latest -r --rpc-url https://carrot.megaeth.com/rpc -j | python3 -c "import sys,json; print(json.load(sys.stdin)['timestamp'])") + 10))
+WINDOW_START=$(($(cast block latest --rpc-url https://carrot.megaeth.com/rpc -f timestamp) + 10))
 WINDOW_END=$((WINDOW_START + 300))  # 5-min window
 
+# Note: contract takes string keyword (not bytes32) — it hashes internally
 cast send 0x4e5c8a5B099260d7c7858eE62E55D03a9015e39c \
-  "createQuest(bytes32,string,uint256,uint256)" \
-  $KEYWORD_HASH "$FEED_URL" $WINDOW_START $WINDOW_END \
+  "createQuest(string,string,uint64,uint64)" \
+  "bitcoin" "$FEED_URL" $WINDOW_START $WINDOW_END \
   --rpc-url https://carrot.megaeth.com/rpc \
   --private-key $PRIVATE_KEY
 ```
@@ -268,6 +268,7 @@ cast send 0x4e5c8a5B099260d7c7858eE62E55D03a9015e39c \
 - MegaETH supports `eth_sendRawTransactionSync` for instant receipts
 
 ## Known Issues & Gotchas
+- `createQuest` takes `(string keyword, string sourceUrl, uint64 windowStart, uint64 windowEnd)` — string, not bytes32
 - `createQuest` is NOT payable — do not send `--value` with it
 - `submitClaim` requires 4 params: `(questId, position, repStake, confidence)` — not 2
 - REP operator must be approved before placing bets: `setOperator(questContract, true)`
