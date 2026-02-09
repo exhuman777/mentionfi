@@ -16,6 +16,15 @@ curl https://oracle-production-aa8f.up.railway.app/api/v1/quests/1
 
 ---
 
+## Features
+
+- **BINGO Mode**: Deterministic 30-min keyword rounds (6 main + 3 quick keywords). All users see the same grid, seeded by time slot. One-click market creation and betting.
+- **PULSE Mode**: Live order book view of all keyword markets. Scrolling ticker tape, bid/ask depth bars, sentiment indicators.
+- **Cent-Based Pricing**: Sub-ETH amounts display as cents (e.g., "0.5¢" instead of "0.005 ETH") for better readability.
+- **Social Share**: Web Share API on resolved quests and winning positions.
+- **Leaderboard**: Top 5 quest creators by activity.
+- **10 RSS Feeds**: Synced with oracle — CoinDesk(S), Cointelegraph(S), CNBC Markets(S), Hacker News(S), CryptoSlate(A), The Defiant(A), TechCrunch(A), Yahoo News(A), CryptoPotato(B), CryptoNews(B).
+
 ## Architecture
 
 ```
@@ -26,8 +35,8 @@ curl https://oracle-production-aa8f.up.railway.app/api/v1/quests/1
 │  │ Frontend  │   │  Oracle   │   │  Contracts    │  │
 │  │ (Vercel)  │   │ (Railway) │   │ (MegaETH)     │  │
 │  │           │   │           │   │               │  │
-│  │ React UI  │   │ RSS Check │   │ MentionQuest  │  │
-│  │ Privy     │◄──┤ API v1    │──►│ RepToken      │  │
+│  │ BINGO     │   │ RSS Check │   │ MentionQuest  │  │
+│  │ PULSE     │◄──┤ API v1    │──►│ RepToken      │  │
 │  │ Agent     │   │ Resolver  │   │ EIP-6909      │  │
 │  │ Discovery │   │ Cache     │   │               │  │
 │  └──────────┘   └───────────┘   └───────────────┘  │

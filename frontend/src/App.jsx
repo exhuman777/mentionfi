@@ -3,6 +3,7 @@ import { PrivyProvider, usePrivy, useWallets } from '@privy-io/react-auth';
 import { privyConfig, megaethTestnet } from './privy-config';
 import { ethers } from 'ethers';
 import RogueASCIIBg from './RogueASCIIBg';
+import { fmtEth } from './logic';
 
 const PRIVY_APP_ID = 'cmlcigd1f01b9jm0du28i2jpx';
 
@@ -31,20 +32,18 @@ const QUEST_ABI = [
 const QuestStatus = ['Open', 'Closed', 'Resolved', 'Cancelled'];
 const Position = ['None', 'Yes', 'No'];
 
-// Expanded feed list from feeds audit
+// RSS Feeds — synced with oracle/src/feeds.ts (oracle = source of truth)
 const RSS_FEEDS = [
-  { name: 'CoinDesk', url: 'https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml', tier: 'A' },
+  { name: 'CoinDesk', url: 'https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml', tier: 'S' },
   { name: 'Cointelegraph', url: 'https://cointelegraph.com/rss', tier: 'S' },
   { name: 'CryptoSlate', url: 'https://cryptoslate.com/feed/', tier: 'A' },
-  { name: 'The Block', url: 'https://www.theblock.co/rss.xml', tier: 'A' },
-  { name: 'Decrypt', url: 'https://decrypt.co/feed', tier: 'A' },
-  { name: 'Blockworks', url: 'https://blockworks.co/feed/', tier: 'B' },
-  { name: 'Bitcoin Magazine', url: 'https://bitcoinmagazine.com/feed', tier: 'B' },
-  { name: 'Hacker News', url: 'https://hnrss.org/newest?q=bitcoin+OR+ethereum+OR+crypto&points=5', tier: 'S' },
+  { name: 'CryptoPotato', url: 'https://cryptopotato.com/feed/', tier: 'B' },
+  { name: 'The Defiant', url: 'https://thedefiant.io/feed/', tier: 'A' },
+  { name: 'CryptoNews', url: 'https://cryptonews.com/news/feed/', tier: 'B' },
+  { name: 'CNBC Markets', url: 'https://www.cnbc.com/id/10000664/device/rss/rss.html', tier: 'S' },
+  { name: 'Hacker News', url: 'https://news.ycombinator.com/rss', tier: 'S' },
   { name: 'TechCrunch', url: 'https://techcrunch.com/feed/', tier: 'A' },
-  { name: 'The Defiant', url: 'https://thedefiant.substack.com/feed', tier: 'B' },
-  { name: 'Yahoo News', url: 'https://news.yahoo.com/rss/', tier: 'C' },
-  { name: 'CNBC', url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114', tier: 'B' },
+  { name: 'Yahoo News', url: 'https://news.yahoo.com/rss/', tier: 'A' },
 ];
 
 const DURATION_PRESETS = [
@@ -139,6 +138,9 @@ function MentionFiDashboard() {
   const [stakeAmount, setStakeAmount] = useState('0.001');
   const [oracleBalance, setOracleBalance] = useState(null);
   const [userPositions, setUserPositions] = useState({});
+  const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [oracleHealth, setOracleHealth] = useState(null);
+  const [scanProgress, setScanProgress] = useState(0);
   const [keywordMap, setKeywordMap] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('mentionfi_keywords') || '{}');
@@ -246,19 +248,30 @@ function MentionFiDashboard() {
   useEffect(() => {
     const fetchLive = async () => {
       try {
-        const res = await fetch(`${ORACLE_API}/api/v1/feeds`);
-        if (!res.ok) return;
-        const json = await res.json();
-        if (json.success && json.data) {
-          // Extract feed names as "recent activity" items
-          const items = json.data.map(f => ({ feed: f.name || f.url, tier: f.tier, time: Date.now() }));
-          setLiveFeed(items.slice(0, 12));
+        const [feedRes, healthRes] = await Promise.allSettled([
+          fetch(`${ORACLE_API}/api/v1/feeds`),
+          fetch(`${ORACLE_API}/health`),
+        ]);
+        if (feedRes.status === 'fulfilled' && feedRes.value.ok) {
+          const json = await feedRes.value.json();
+          if (json.success && json.data) {
+            const items = json.data.map(f => ({ feed: f.name || f.url, tier: f.tier, time: Date.now() }));
+            setLiveFeed(items.slice(0, 12));
+          }
+        }
+        if (healthRes.status === 'fulfilled' && healthRes.value.ok) {
+          const hJson = await healthRes.value.json();
+          setOracleHealth(hJson);
         }
       } catch (e) { /* ignore */ }
     };
     fetchLive();
     const t = setInterval(fetchLive, 30000);
-    return () => clearInterval(t);
+    // Scan progress bar — ticks every second within 30s cycle
+    const sp = setInterval(() => {
+      setScanProgress(prev => (prev + 1) % 30);
+    }, 1000);
+    return () => { clearInterval(t); clearInterval(sp); };
   }, []);
 
   const round = getBingoRound(now);
@@ -386,6 +399,11 @@ function MentionFiDashboard() {
     finally { setLoading(false); }
   };
 
+  const handleShare = (text) => {
+    if (navigator.share) navigator.share({ title: 'MentionFi', text, url: 'https://mentionfi.vercel.app' });
+    else { navigator.clipboard.writeText(text + ' https://mentionfi.vercel.app'); setError('Copied to clipboard!'); }
+  };
+
   // Find active quest matching a keyword hash
   const findBingoQuest = (hash) => quests.find(q => q.keywordHash === hash && q.status === 0);
 
@@ -410,6 +428,12 @@ function MentionFiDashboard() {
   const activeQuests = quests.filter(q => q.status === 0);
   const resolvedQuests = quests.filter(q => q.status === 2);
   const totalEthStaked = quests.reduce((s, q) => s + parseFloat(q.totalYesEth) + parseFloat(q.totalNoEth), 0);
+  const totalBets = Object.keys(userPositions).length;
+  const wonBets = Object.entries(userPositions).filter(([qId, pos]) => {
+    const q = quests.find(x => x.id === Number(qId));
+    return q && q.status === 2 && q.outcome === pos.position;
+  }).length;
+  const winRate = totalBets > 0 ? Math.round((wonBets / totalBets) * 100) : 0;
 
   if (!ready) return <div style={{ color: C.text3, fontFamily: "'JetBrains Mono', monospace", padding: '50px', background: C.bg, minHeight: '100vh' }}>Loading...</div>;
 
@@ -443,7 +467,7 @@ function MentionFiDashboard() {
           <div style={{ display: 'flex', gap: '24px', justifyContent: 'center', marginBottom: '32px', flexWrap: 'wrap' }}>
             <StatBox label="Live Markets" value={activeQuests.length} color={C.yes} />
             <StatBox label="Resolved" value={resolvedQuests.length} />
-            <StatBox label="Total Pool" value={`${totalEthStaked.toFixed(3)} ETH`} color={C.warn} />
+            <StatBox label="Total Pool" value={fmtEth(totalEthStaked)} color={C.warn} />
           </div>
 
           <div style={{ textAlign: 'center' }}>
@@ -493,16 +517,43 @@ function MentionFiDashboard() {
         ) : (
           <>
             {/* Stats row */}
-            <div style={{ display: 'flex', gap: '12px', marginBottom: '24px', flexWrap: 'wrap' }}>
-              <StatBox label="Your REP" value={parseFloat(userRep || 0).toFixed(0)} color={C.yes} />
-              <StatBox label="Live Quests" value={activeQuests.length} color={C.info} />
-              <StatBox label="Resolved" value={resolvedQuests.length} />
-              <StatBox label="Total Pool" value={`${totalEthStaked.toFixed(3)} ETH`} color={C.warn} />
-              <StatBox label="Oracle Fund" value={oracleBalance ? `${oracleBalance} ETH` : '...'} color={C.text2} />
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(80px, 1fr))', gap: '10px', marginBottom: '24px' }}>
+              <StatBox label="Total Quests" value={quests.length} />
+              <StatBox label="Active" value={activeQuests.length} color={C.yes} />
+              <StatBox label="Your Bets" value={Object.keys(userPositions).length} color={C.info} />
+              <StatBox label="Win Rate" value={`${winRate}%`} color={winRate > 50 ? C.yes : C.text2} />
+              <StatBox label="REP" value={parseFloat(userRep || 0).toFixed(0)} color={C.yes} />
             </div>
 
+            {/* Leaderboard — collapsible */}
+            {(() => {
+              const creatorCounts = {};
+              quests.forEach(q => { creatorCounts[q.creator] = (creatorCounts[q.creator] || 0) + 1; });
+              const top5 = Object.entries(creatorCounts).sort((a, b) => b[1] - a[1]).slice(0, 5);
+              if (top5.length === 0) return null;
+              return (
+                <div style={{ ...st.glass, padding: '12px 16px', marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setShowLeaderboard(!showLeaderboard)}>
+                    <span style={{ color: C.text3, fontSize: '10px', letterSpacing: '1px' }}>TOP QUEST CREATORS</span>
+                    <span style={{ color: C.text3, fontSize: '10px' }}>{showLeaderboard ? '▲' : '▼'}</span>
+                  </div>
+                  {showLeaderboard && (
+                    <div style={{ display: 'flex', gap: '10px', overflowX: 'auto', paddingTop: '10px', paddingBottom: '4px' }}>
+                      {top5.map(([addr, count], i) => (
+                        <div key={addr} style={{ flexShrink: 0, background: C.bg, border: `1px solid ${i === 0 ? C.yes + '44' : C.border}`, borderRadius: '8px', padding: '10px 14px', minWidth: '120px', textAlign: 'center' }}>
+                          <div style={{ color: i === 0 ? C.yes : C.text2, fontSize: '10px', fontWeight: '700', marginBottom: '2px' }}>#{i + 1}</div>
+                          <div style={{ color: C.text1, fontSize: '11px', fontFamily: 'monospace' }}>{addr.slice(0, 6)}...{addr.slice(-4)}</div>
+                          <div style={{ color: C.warn, fontSize: '13px', fontWeight: '700', marginTop: '4px' }}>{count} quest{count > 1 ? 's' : ''}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Navigation tabs */}
-            <div style={{ display: 'flex', gap: '4px', marginBottom: '20px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '4px', marginBottom: '20px', overflowX: 'auto', whiteSpace: 'nowrap', paddingBottom: '4px' }}>
               {[
                 { key: 'bingo', label: 'BINGO' },
                 { key: 'pulse', label: 'PULSE' },
@@ -512,7 +563,7 @@ function MentionFiDashboard() {
                 { key: 'howto', label: 'HOW TO PLAY' },
                 { key: 'oracle', label: 'ORACLE' },
               ].map(t => (
-                <button key={t.key} onClick={() => setView(t.key)} style={view === t.key ? st.tabActive : st.tab}>
+                <button key={t.key} onClick={() => setView(t.key)} style={{ ...(view === t.key ? st.tabActive : st.tab), flexShrink: 0 }}>
                   {t.label}
                 </button>
               ))}
@@ -548,7 +599,7 @@ function MentionFiDashboard() {
                       return (
                         <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
                           <span style={{ color: isHot ? C.yes : C.text3, fontSize: '11px', fontWeight: isHot ? '700' : '400', textTransform: 'uppercase' }}>{item.keyword}</span>
-                          {isHot && <span style={{ color: C.warn, fontSize: '9px' }}>{(parseFloat(q.totalYesEth) + parseFloat(q.totalNoEth)).toFixed(3)}</span>}
+                          {isHot && <span style={{ color: C.warn, fontSize: '9px' }}>{fmtEth(parseFloat(q.totalYesEth) + parseFloat(q.totalNoEth))}</span>}
                           {i < 8 && <span style={{ color: C.border, fontSize: '10px' }}>|</span>}
                         </div>
                       );
@@ -569,7 +620,7 @@ function MentionFiDashboard() {
 
                 {/* 6-word bingo grid */}
                 <h3 style={{ color: C.text2, fontSize: '11px', letterSpacing: '1px', marginBottom: '8px' }}>MAIN ROUND — 6 KEYWORDS</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', marginBottom: '20px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '8px', marginBottom: '20px' }}>
                   {round.main.map((item, i) => {
                     const q = findBingoQuest(item.hash);
                     const pos = q ? userPositions[q.id] : null;
@@ -587,10 +638,10 @@ function MentionFiDashboard() {
                               <span style={{ color: C.yes }}>Y {q.yesOdds || 50}%</span>
                               <span style={{ color: C.no }}>N {q.noOdds || 50}%</span>
                             </div>
-                            <div style={{ color: C.warn, fontSize: '13px', fontWeight: '700', marginBottom: '6px' }}>{pool.toFixed(3)} ETH</div>
+                            <div style={{ color: C.warn, fontSize: '13px', fontWeight: '700', marginBottom: '6px' }}>{fmtEth(pool)}</div>
                             {pos ? (
                               <div style={{ color: pos.position === 1 ? C.yes : C.no, fontSize: '10px', fontWeight: '700', padding: '3px 8px', background: `${pos.position === 1 ? C.yes : C.no}11`, borderRadius: '4px' }}>
-                                {pos.position === 1 ? 'YES' : 'NO'} — {parseFloat(pos.ethStake).toFixed(3)}
+                                {pos.position === 1 ? 'YES' : 'NO'} — {fmtEth(parseFloat(pos.ethStake))}
                               </div>
                             ) : (
                               <div style={{ display: 'flex', gap: '4px' }}>
@@ -612,7 +663,7 @@ function MentionFiDashboard() {
 
                 {/* 3-word quick grid */}
                 <h3 style={{ color: C.text2, fontSize: '11px', letterSpacing: '1px', marginBottom: '8px' }}>QUICK ROUND — 3 KEYWORDS</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', marginBottom: '20px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '8px', marginBottom: '20px' }}>
                   {round.quick.map((item, i) => {
                     const q = findBingoQuest(item.hash);
                     const pos = q ? userPositions[q.id] : null;
@@ -623,7 +674,7 @@ function MentionFiDashboard() {
                         <div style={{ color: C.text3, fontSize: '9px', marginBottom: '8px' }}>{item.feed.name} [{item.feed.tier}]</div>
                         {q ? (
                           <>
-                            <div style={{ color: C.warn, fontSize: '13px', fontWeight: '700', marginBottom: '4px' }}>{pool.toFixed(3)} ETH</div>
+                            <div style={{ color: C.warn, fontSize: '13px', fontWeight: '700', marginBottom: '4px' }}>{fmtEth(pool)}</div>
                             {pos ? (
                               <div style={{ color: pos.position === 1 ? C.yes : C.no, fontSize: '10px', fontWeight: '700' }}>{pos.position === 1 ? 'YES' : 'NO'}</div>
                             ) : (
@@ -690,7 +741,7 @@ function MentionFiDashboard() {
                               <span style={{ color: d.sentiment >= 50 ? C.yes : C.no, fontSize: '10px' }}>
                                 {d.sentiment >= 50 ? '\u25B2' : '\u25BC'}
                               </span>
-                              <span style={{ color: C.warn, fontSize: '10px' }}>{d.total.toFixed(3)}</span>
+                              <span style={{ color: C.warn, fontSize: '10px' }}>{fmtEth(d.total)}</span>
                             </>
                           )}
                         </span>
@@ -707,29 +758,29 @@ function MentionFiDashboard() {
                   </div>
 
                   {/* Column headers */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 70px 100px 70px 1fr', padding: '8px 16px', borderBottom: `1px solid ${C.border}`, fontSize: '9px', color: C.text3, letterSpacing: '1px' }}>
-                    <span style={{ textAlign: 'right' }}>BID DEPTH</span>
+                  <div className="pulse-header" style={{ display: 'grid', gridTemplateColumns: '1fr 70px 100px 70px 1fr', padding: '8px 16px', borderBottom: `1px solid ${C.border}`, fontSize: '9px', color: C.text3, letterSpacing: '1px' }}>
+                    <span className="pulse-depth" style={{ textAlign: 'right' }}>BID DEPTH</span>
                     <span style={{ textAlign: 'right' }}>BID (YES)</span>
                     <span style={{ textAlign: 'center' }}>KEYWORD</span>
                     <span>ASK (NO)</span>
-                    <span>ASK DEPTH</span>
+                    <span className="pulse-depth" style={{}}>ASK DEPTH</span>
                   </div>
 
                   {/* Listed markets */}
                   {listedWords.length > 0 ? listedWords.map((d, i) => (
-                    <div key={d.keyword} style={{ display: 'grid', gridTemplateColumns: '1fr 70px 100px 70px 1fr', padding: '7px 16px', borderBottom: `1px solid ${C.border}22`, alignItems: 'center', background: i % 2 === 0 ? 'transparent' : `${C.bg}44` }}>
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', paddingRight: '8px' }}>
+                    <div key={d.keyword} className="pulse-row" style={{ display: 'grid', gridTemplateColumns: '1fr 70px 100px 70px 1fr', padding: '7px 16px', borderBottom: `1px solid ${C.border}22`, alignItems: 'center', background: i % 2 === 0 ? 'transparent' : `${C.bg}44` }}>
+                      <div className="pulse-depth" style={{ display: 'flex', justifyContent: 'flex-end', paddingRight: '8px' }}>
                         <div style={{ height: '14px', background: `${C.yes}44`, borderRadius: '2px 0 0 2px', width: `${Math.max(4, (d.yesPool / maxPool) * 100)}%`, minWidth: '4px' }} />
                       </div>
-                      <span style={{ color: C.yes, fontSize: '12px', fontWeight: '600', textAlign: 'right', paddingRight: '12px' }}>{d.yesPool.toFixed(3)}</span>
+                      <span style={{ color: C.yes, fontSize: '12px', fontWeight: '600', textAlign: 'right', paddingRight: '12px' }}>{fmtEth(d.yesPool)}</span>
                       <div style={{ textAlign: 'center' }}>
                         <span style={{ color: C.text1, fontSize: '13px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px' }}>{d.keyword}</span>
                         <div style={{ fontSize: '9px', color: d.sentiment >= 50 ? C.yes : C.no, marginTop: '1px' }}>
                           {d.sentiment >= 50 ? '\u25B2' : '\u25BC'} {d.sentiment}%
                         </div>
                       </div>
-                      <span style={{ color: C.no, fontSize: '12px', fontWeight: '600', paddingLeft: '12px' }}>{d.noPool.toFixed(3)}</span>
-                      <div style={{ display: 'flex', paddingLeft: '8px' }}>
+                      <span style={{ color: C.no, fontSize: '12px', fontWeight: '600', paddingLeft: '12px' }}>{fmtEth(d.noPool)}</span>
+                      <div className="pulse-depth" style={{ display: 'flex', paddingLeft: '8px' }}>
                         <div style={{ height: '14px', background: `${C.no}44`, borderRadius: '0 2px 2px 0', width: `${Math.max(4, (d.noPool / maxPool) * 100)}%`, minWidth: '4px' }} />
                       </div>
                     </div>
@@ -743,9 +794,9 @@ function MentionFiDashboard() {
                   {listedWords.length > 0 && (
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 70px 100px 70px 1fr', padding: '10px 16px', borderTop: `1px solid ${C.border}`, fontSize: '10px', color: C.warn }}>
                       <span />
-                      <span style={{ textAlign: 'right', paddingRight: '12px', fontWeight: '700' }}>{listedWords.reduce((s, d) => s + d.yesPool, 0).toFixed(3)}</span>
+                      <span style={{ textAlign: 'right', paddingRight: '12px', fontWeight: '700' }}>{fmtEth(listedWords.reduce((s, d) => s + d.yesPool, 0))}</span>
                       <span style={{ textAlign: 'center', letterSpacing: '1px' }}>TOTAL</span>
-                      <span style={{ paddingLeft: '12px', fontWeight: '700' }}>{listedWords.reduce((s, d) => s + d.noPool, 0).toFixed(3)}</span>
+                      <span style={{ paddingLeft: '12px', fontWeight: '700' }}>{fmtEth(listedWords.reduce((s, d) => s + d.noPool, 0))}</span>
                       <span />
                     </div>
                   )}
@@ -790,7 +841,7 @@ function MentionFiDashboard() {
                       <>
                         <h3 style={{ ...st.sectionTitle, marginTop: '32px' }}>RESOLVED <span style={{ color: C.text3 }}>({resolvedQuests.length})</span></h3>
                         {resolvedQuests.slice(0, 5).map(q => (
-                          <QuestCard key={q.id} quest={q} fmtTime={fmtTime} fmtFeed={fmtFeed} onClaim={handleClaim} loading={loading} keywordMap={keywordMap} userPosition={userPositions[q.id]} />
+                          <QuestCard key={q.id} quest={q} fmtTime={fmtTime} fmtFeed={fmtFeed} onClaim={handleClaim} onShare={handleShare} loading={loading} keywordMap={keywordMap} userPosition={userPositions[q.id]} />
                         ))}
                       </>
                     )}
@@ -849,7 +900,7 @@ function MentionFiDashboard() {
                     <div><div style={{ color: C.yes, fontSize: '24px', fontWeight: '700' }}>{parseFloat(userRep || 0).toFixed(0)}</div><div style={{ color: C.text3, fontSize: '11px' }}>REP Balance</div></div>
                     <div><div style={{ color: C.text1, fontSize: '24px', fontWeight: '700' }}>{quests.filter(q => q.creator === activeWallet?.address).length}</div><div style={{ color: C.text3, fontSize: '11px' }}>Quests Created</div></div>
                     <div><div style={{ color: C.info, fontSize: '24px', fontWeight: '700' }}>{Object.keys(userPositions).length}</div><div style={{ color: C.text3, fontSize: '11px' }}>Active Bets</div></div>
-                    <div><div style={{ color: C.warn, fontSize: '24px', fontWeight: '700' }}>{Object.values(userPositions).reduce((s, p) => s + parseFloat(p.ethStake), 0).toFixed(3)}</div><div style={{ color: C.text3, fontSize: '11px' }}>ETH at Risk</div></div>
+                    <div><div style={{ color: C.warn, fontSize: '24px', fontWeight: '700' }}>{fmtEth(Object.values(userPositions).reduce((s, p) => s + parseFloat(p.ethStake), 0))}</div><div style={{ color: C.text3, fontSize: '11px' }}>ETH at Risk</div></div>
                   </div>
                   {Object.keys(userPositions).length > 0 ? (
                     <div style={{ display: 'grid', gap: '10px' }}>
@@ -884,11 +935,11 @@ function MentionFiDashboard() {
                             <div style={{ display: 'flex', gap: '12px', fontSize: '11px' }}>
                               <div style={{ flex: 1 }}>
                                 <div style={{ color: C.text3, marginBottom: '2px' }}>STAKED</div>
-                                <div style={{ color: C.text1, fontWeight: '600' }}>{myStake.toFixed(3)} ETH</div>
+                                <div style={{ color: C.text1, fontWeight: '600' }}>{fmtEth(myStake)}</div>
                               </div>
                               <div style={{ flex: 1 }}>
                                 <div style={{ color: C.text3, marginBottom: '2px' }}>IF YOU WIN</div>
-                                <div style={{ color: C.yes, fontWeight: '600' }}>{potentialWin.toFixed(3)} ETH</div>
+                                <div style={{ color: C.yes, fontWeight: '600' }}>{fmtEth(potentialWin)}</div>
                               </div>
                               <div style={{ flex: 1 }}>
                                 <div style={{ color: C.text3, marginBottom: '2px' }}>ROI</div>
@@ -901,14 +952,18 @@ function MentionFiDashboard() {
                             </div>
                             {isWinning && (
                               <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: `${C.yes}11`, borderRadius: '6px', border: `1px solid ${C.yes}33` }}>
-                                <span style={{ color: C.yes, fontSize: '11px', fontWeight: '700' }}>WON — {potentialWin.toFixed(3)} ETH</span>
-                                <button onClick={() => handleClaim(Number(qId))} disabled={loading}
-                                  style={{ padding: '5px 14px', background: C.yes, border: 'none', color: C.bg, fontFamily: "'JetBrains Mono', monospace", fontWeight: '600', cursor: 'pointer', borderRadius: '4px', fontSize: '11px' }}>CLAIM</button>
+                                <span style={{ color: C.yes, fontSize: '11px', fontWeight: '700' }}>WON — {fmtEth(potentialWin)}</span>
+                                <div style={{ display: 'flex', gap: '6px' }}>
+                                  <button onClick={() => handleClaim(Number(qId))} disabled={loading}
+                                    style={{ padding: '5px 14px', background: C.yes, border: 'none', color: C.bg, fontFamily: "'JetBrains Mono', monospace", fontWeight: '600', cursor: 'pointer', borderRadius: '4px', fontSize: '11px' }}>CLAIM</button>
+                                  <button onClick={() => handleShare(`Won ${fmtEth(potentialWin)} on "${keyword || '#' + qId}" in MentionFi!`)}
+                                    style={{ padding: '5px 10px', background: 'transparent', border: `1px solid ${C.border}`, color: C.text2, fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', cursor: 'pointer', borderRadius: '4px' }}>&gt;</button>
+                                </div>
                               </div>
                             )}
                             {isLosing && (
                               <div style={{ marginTop: '10px', padding: '6px 12px', background: `${C.no}11`, borderRadius: '6px', border: `1px solid ${C.no}33`, textAlign: 'center' }}>
-                                <span style={{ color: C.no, fontSize: '11px' }}>LOST — {myStake.toFixed(3)} ETH forfeited</span>
+                                <span style={{ color: C.no, fontSize: '11px' }}>LOST — {fmtEth(myStake)} forfeited</span>
                               </div>
                             )}
                           </div>
@@ -1071,23 +1126,17 @@ function MentionFiDashboard() {
 
  S-TIER │ 2-5 min updates  │ HIGH YES prob
  ───────┼──────────────────┼──────────────
- Cointelegraph             │ Crypto, fast
- Hacker News               │ Tech, curated
+ CoinDesk, Cointelegraph   │ Crypto, fast
+ CNBC Markets, Hacker News │ Markets+Tech
 
  A-TIER │ 5-15 min updates │ MODERATE
  ───────┼──────────────────┼──────────────
- CoinDesk, CryptoSlate     │ Major crypto
- The Block, Decrypt        │ Web3 coverage
- TechCrunch                │ Tech startups
+ CryptoSlate, The Defiant  │ Crypto/DeFi
+ TechCrunch, Yahoo News    │ Tech/General
 
  B-TIER │ 5-30 min updates │ LOWER
  ───────┼──────────────────┼──────────────
- Blockworks, Bitcoin Mag   │ Niche focus
- CNBC, The Defiant         │ Slower cycles
-
- C-TIER │ 15-60 min updates│ LOW
- ───────┼──────────────────┼──────────────
- Yahoo News                │ General, slow
+ CryptoPotato, CryptoNews  │ Niche crypto
 
  TIP: "bitcoin" on S-tier 30min → likely YES
       "obscure" on C-tier 10min → likely NO
@@ -1229,23 +1278,31 @@ function MentionFiDashboard() {
               <div style={{ width: '100%' }}>
                 <div style={st.glass}>
                   <h3 style={{ color: C.text1, fontSize: '14px', margin: '0 0 16px' }}>ORACLE STATUS</h3>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '16px', marginBottom: '16px' }}>
                     <div>
-                      <div style={{ color: C.yes, fontSize: '14px', fontWeight: '600' }}>ONLINE</div>
+                      <div style={{ color: oracleHealth?.status === 'healthy' ? C.yes : C.warn, fontSize: '14px', fontWeight: '600' }}>{oracleHealth?.status === 'healthy' ? 'ONLINE' : 'CHECKING...'}</div>
                       <div style={{ color: C.text3, fontSize: '11px' }}>Status</div>
                     </div>
                     <div>
-                      <div style={{ color: C.text1, fontSize: '14px', fontWeight: '600' }}>{oracleBalance || '...'} ETH</div>
-                      <div style={{ color: C.text3, fontSize: '11px' }}>Oracle Fund (Gas)</div>
+                      <div style={{ color: C.text1, fontSize: '14px', fontWeight: '600' }}>{oracleHealth?.uptime || '...'}</div>
+                      <div style={{ color: C.text3, fontSize: '11px' }}>Uptime</div>
                     </div>
                     <div>
-                      <div style={{ color: C.text1, fontSize: '14px', fontWeight: '600' }}>{resolvedQuests.length}</div>
+                      <div style={{ color: C.text1, fontSize: '14px', fontWeight: '600' }}>{oracleHealth?.questsResolved ?? resolvedQuests.length}</div>
                       <div style={{ color: C.text3, fontSize: '11px' }}>Quests Resolved</div>
                     </div>
                     <div>
-                      <div style={{ color: C.text1, fontSize: '14px', fontWeight: '600' }}>30s</div>
-                      <div style={{ color: C.text3, fontSize: '11px' }}>Poll Interval</div>
+                      <div style={{ color: C.text1, fontSize: '14px', fontWeight: '600' }}>{oracleBalance ? fmtEth(parseFloat(oracleBalance)) : '...'}</div>
+                      <div style={{ color: C.text3, fontSize: '11px' }}>Oracle Fund (Gas)</div>
                     </div>
+                  </div>
+                  {/* Scan cycle progress */}
+                  <div style={{ marginBottom: '4px', display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: C.text3 }}>
+                    <span>NEXT SCAN</span>
+                    <span>{30 - scanProgress}s</span>
+                  </div>
+                  <div style={{ height: '3px', borderRadius: '2px', background: C.border, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${(scanProgress / 30) * 100}%`, background: C.yes, borderRadius: '2px', transition: 'width 1s linear' }} />
                   </div>
                 </div>
 
@@ -1254,7 +1311,10 @@ function MentionFiDashboard() {
                   <div style={{ display: 'grid', gap: '8px' }}>
                     {RSS_FEEDS.map(f => (
                       <div key={f.url} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: C.bg, borderRadius: '6px', border: `1px solid ${C.border}` }}>
-                        <span style={{ color: C.text1, fontSize: '13px' }}>{f.name}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: C.yes, boxShadow: `0 0 4px ${C.yes}` }} />
+                          <span style={{ color: C.text1, fontSize: '13px' }}>{f.name}</span>
+                        </div>
                         <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px',
                           background: f.tier === 'S' ? `${C.yes}22` : f.tier === 'A' ? `${C.info}22` : `${C.text3}22`,
                           color: f.tier === 'S' ? C.yes : f.tier === 'A' ? C.info : C.text2,
@@ -1290,14 +1350,14 @@ function MentionFiDashboard() {
 }
 
 // Quest Card Component
-function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setStakeAmount, loading, userPosition, keywordMap }) {
+function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, onShare, stakeAmount, setStakeAmount, loading, userPosition, keywordMap }) {
   const isActive = quest.status === 0;
   const isResolved = quest.status === 2;
   const yesPercent = quest.yesOdds + quest.noOdds > 0 ? quest.yesOdds : 50;
   const noPercent = quest.yesOdds + quest.noOdds > 0 ? quest.noOdds : 50;
   const hasBet = !!userPosition;
   const keyword = keywordMap?.[quest.keywordHash] || null;
-  const totalPool = (parseFloat(quest.totalYesEth || 0) + parseFloat(quest.totalNoEth || 0)).toFixed(3);
+  const totalPool = parseFloat(quest.totalYesEth || 0) + parseFloat(quest.totalNoEth || 0);
 
   return (
     <div style={{ background: C.surface, border: `1px solid ${hasBet ? (userPosition.position === 1 ? C.yes : C.no) + '44' : C.border}`, borderRadius: '12px', padding: '16px', marginBottom: '10px', position: 'relative', zIndex: 2, backdropFilter: 'blur(8px)' }}>
@@ -1333,15 +1393,15 @@ function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setSt
       {/* Pool display — prominent */}
       <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
         <div style={{ flex: 1, padding: '10px 12px', background: `${C.yes}0A`, borderRadius: '8px', border: `1px solid ${C.yes}22`, textAlign: 'center' }}>
-          <div style={{ color: C.yes, fontSize: '16px', fontWeight: '700' }}>{parseFloat(quest.totalYesEth || 0).toFixed(3)}</div>
+          <div style={{ color: C.yes, fontSize: '16px', fontWeight: '700' }}>{fmtEth(parseFloat(quest.totalYesEth || 0))}</div>
           <div style={{ color: C.yes, fontSize: '10px', opacity: 0.7 }}>ETH on YES</div>
         </div>
         <div style={{ flex: 1, padding: '10px 12px', background: `${C.no}0A`, borderRadius: '8px', border: `1px solid ${C.no}22`, textAlign: 'center' }}>
-          <div style={{ color: C.no, fontSize: '16px', fontWeight: '700' }}>{parseFloat(quest.totalNoEth || 0).toFixed(3)}</div>
+          <div style={{ color: C.no, fontSize: '16px', fontWeight: '700' }}>{fmtEth(parseFloat(quest.totalNoEth || 0))}</div>
           <div style={{ color: C.no, fontSize: '10px', opacity: 0.7 }}>ETH on NO</div>
         </div>
         <div style={{ flex: 1, padding: '10px 12px', background: `${C.warn}0A`, borderRadius: '8px', border: `1px solid ${C.warn}22`, textAlign: 'center' }}>
-          <div style={{ color: C.warn, fontSize: '16px', fontWeight: '700' }}>{totalPool}</div>
+          <div style={{ color: C.warn, fontSize: '16px', fontWeight: '700' }}>{fmtEth(totalPool)}</div>
           <div style={{ color: C.warn, fontSize: '10px', opacity: 0.7 }}>TOTAL POOL</div>
         </div>
       </div>
@@ -1361,7 +1421,7 @@ function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setSt
       {hasBet && (
         <div style={{ padding: '6px 10px', marginBottom: '10px', background: `${userPosition.position === 1 ? C.yes : C.no}11`, borderRadius: '6px', border: `1px solid ${userPosition.position === 1 ? C.yes : C.no}33`, textAlign: 'center' }}>
           <span style={{ color: userPosition.position === 1 ? C.yes : C.no, fontSize: '11px', fontWeight: '700' }}>
-            YOUR BET: {userPosition.position === 1 ? 'YES' : 'NO'} — {parseFloat(userPosition.ethStake).toFixed(3)} ETH + {parseFloat(userPosition.repStake).toFixed(0)} REP
+            YOUR BET: {userPosition.position === 1 ? 'YES' : 'NO'} — {fmtEth(parseFloat(userPosition.ethStake))} + {parseFloat(userPosition.repStake).toFixed(0)} REP
           </span>
         </div>
       )}
@@ -1396,12 +1456,18 @@ function QuestCard({ quest, fmtTime, fmtFeed, onBet, onClaim, stakeAmount, setSt
           <span style={{ color: quest.outcome === 1 ? C.yes : C.no, fontSize: '13px', fontWeight: '600' }}>
             Result: {Position[quest.outcome]}
           </span>
-          {onClaim && hasBet && !userPosition?.claimed && (
-            <button onClick={() => onClaim(quest.id)} disabled={loading}
-              style={{ padding: '6px 14px', background: C.yes, border: 'none', color: C.bg, fontFamily: "'JetBrains Mono', monospace", fontWeight: '600', cursor: 'pointer', borderRadius: '4px', fontSize: '11px' }}>
-              CLAIM
-            </button>
-          )}
+          <div style={{ display: 'flex', gap: '6px' }}>
+            {onClaim && hasBet && !userPosition?.claimed && (
+              <button onClick={() => onClaim(quest.id)} disabled={loading}
+                style={{ padding: '6px 14px', background: C.yes, border: 'none', color: C.bg, fontFamily: "'JetBrains Mono', monospace", fontWeight: '600', cursor: 'pointer', borderRadius: '4px', fontSize: '11px' }}>
+                CLAIM
+              </button>
+            )}
+            {onShare && (
+              <button onClick={() => onShare(`Quest #${quest.id}${keyword ? ` "${keyword}"` : ''} resolved ${Position[quest.outcome]} on MentionFi. Pool: ${fmtEth(totalPool)}`)}
+                style={{ padding: '6px 10px', background: 'transparent', border: `1px solid ${C.border}`, color: C.text2, fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', cursor: 'pointer', borderRadius: '4px' }}>&gt;</button>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -1440,7 +1506,7 @@ const st = {
     minHeight: '100vh', background: C.bg, fontFamily: "'JetBrains Mono', 'Fira Code', monospace", color: C.text1, position: 'relative',
   },
   content: {
-    position: 'relative', zIndex: 1, maxWidth: '800px', margin: '0 auto', padding: '24px 20px',
+    position: 'relative', zIndex: 1, maxWidth: '800px', margin: '0 auto', padding: 'clamp(12px, 3vw, 24px)',
   },
   badge: {
     background: `${C.surface}`, border: `1px solid ${C.border}`, borderRadius: '4px', padding: '4px 10px', fontSize: '10px', color: C.text2, textTransform: 'uppercase', letterSpacing: '0.5px',
@@ -1497,11 +1563,16 @@ globalStyles.textContent = `
   @keyframes ticker { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
   @keyframes flashIn { 0% { background: rgba(0,255,136,0.15); } 100% { background: transparent; } }
+  @media (max-width: 600px) {
+    .pulse-depth { display: none !important; }
+    .pulse-header, .pulse-row { grid-template-columns: 70px 1fr 70px !important; }
+  }
   button:hover { opacity: 0.85; }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
   select { appearance: none; }
   input::placeholder { color: ${C.text3}; }
-  input:focus, select:focus { outline: none; border-color: ${C.info}; }
+  input:focus, select:focus { outline: none; border-color: ${C.info}; animation: borderBlink 1s step-end infinite; }
+  @keyframes borderBlink { 0%, 100% { border-right-color: ${C.yes}; } 50% { border-right-color: transparent; } }
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: ${C.bg}; }
   ::-webkit-scrollbar-thumb { background: ${C.border}; border-radius: 3px; }

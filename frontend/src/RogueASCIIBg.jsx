@@ -154,8 +154,18 @@ export default function MentionBg() {
       }
 
       // Scanlines
-      ctx.fillStyle = "rgba(0,0,0,0.03)";
+      ctx.fillStyle = "rgba(0,0,0,0.04)";
       for (let y = 0; y < canvas.height; y += 3) ctx.fillRect(0, y, canvas.width, 1);
+
+      // Vignette
+      const vg = ctx.createRadialGradient(
+        canvas.width / 2, canvas.height / 2, canvas.height * 0.3,
+        canvas.width / 2, canvas.height / 2, canvas.height * 0.8
+      );
+      vg.addColorStop(0, "rgba(0,0,0,0)");
+      vg.addColorStop(1, "rgba(0,0,0,0.4)");
+      ctx.fillStyle = vg;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       frameRef.current = requestAnimationFrame(animate);
     };

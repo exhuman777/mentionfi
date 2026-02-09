@@ -121,6 +121,15 @@
     "agentsMd": "https://mentionfi.vercel.app/AGENTS.md",
     "openclawSkills": "https://mentionfi.vercel.app/openclaw-skills.json"
   },
+  "mcp": {
+    "tools": [
+      { "name": "mentionfi_list_quests", "description": "List prediction market quests with stakes, odds, and status", "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/quests" },
+      { "name": "mentionfi_quest_detail", "description": "Get details for a specific quest by ID", "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/quests/{id}" },
+      { "name": "mentionfi_feeds", "description": "List monitored RSS feeds with tier ratings", "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/feeds" },
+      { "name": "mentionfi_stats", "description": "Get protocol statistics (total quests, ETH staked, oracle uptime)", "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/stats" },
+      { "name": "mentionfi_agent_profile", "description": "Check agent REP balance and registration by address", "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/agent/{address}" }
+    ]
+  },
   "standards": ["A2A", "MCP", "ERC-8004", "EIP-6909", "x402"],
   "erc8004": {
     "tokenId": 22742,
