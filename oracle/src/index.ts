@@ -103,6 +103,11 @@ class MentionFiOracle {
   // Cache for keyword → hash mapping
   private keywordCache: Map<string, string> = new Map();
 
+  // Cache for quests where keyword was found during active window
+  // questId → { proof, matchedItem }
+  private foundCache: Map<number, { proof: string; matchedItem: string }> =
+    new Map();
+
   // API quest cache (refreshed every tick)
   private questCache: CachedQuest[] = [];
   private questCacheTime: number = 0;
@@ -473,27 +478,67 @@ class MentionFiOracle {
    * Resolve a single quest
    */
   async resolveQuest(quest: Quest): Promise<boolean> {
-    this.log(`Resolving quest #${quest.id}`);
+    const questId = Number(quest.id);
+    const now = Math.floor(Date.now() / 1000);
+    const windowExpired = Number(quest.windowEnd) <= now;
+    const windowActive =
+      Number(quest.windowStart) <= now && !windowExpired;
+
+    // During active window: scan RSS and cache result, but don't try to resolve on-chain
+    // (Contract requires quest to be Closed, which only happens after windowEnd)
+    if (windowActive) {
+      // Already found? No need to re-scan
+      if (this.foundCache.has(questId)) return false;
+
+      const { found, proof, matchedItem } = await this.checkRSSForKeyword(
+        quest.sourceUrl,
+        quest.keywordHash,
+        Number(quest.windowStart),
+        Number(quest.windowEnd)
+      );
+
+      if (found) {
+        this.log(
+          `  Quest #${questId}: keyword found during active window — cached for resolution after expiry`
+        );
+        this.log(`  Matched: "${matchedItem}"`);
+        this.foundCache.set(questId, {
+          proof,
+          matchedItem: matchedItem || "",
+        });
+      }
+      return false; // Never resolve during active window
+    }
+
+    // Window expired — resolve on-chain
+    this.log(`Resolving quest #${questId}`);
     this.log(`  Source: ${quest.sourceUrl}`);
     this.log(
       `  Window: ${new Date(Number(quest.windowStart) * 1000).toISOString()} - ${new Date(Number(quest.windowEnd) * 1000).toISOString()}`
     );
 
-    const now = Math.floor(Date.now() / 1000);
-    const windowExpired = Number(quest.windowEnd) <= now;
+    // Check if we already found the keyword during the active window
+    let found = false;
+    let proof = ethers.ZeroHash;
+    let matchedItem: string | undefined;
 
-    // Check RSS for keyword
-    const { found, proof, matchedItem } = await this.checkRSSForKeyword(
-      quest.sourceUrl,
-      quest.keywordHash,
-      Number(quest.windowStart),
-      Number(quest.windowEnd)
-    );
-
-    // If keyword found → YES. If window expired and not found → NO. If window still open and not found → skip.
-    if (!found && !windowExpired) {
-      this.log(`  Window still open, keyword not found yet — skipping`);
-      return false;
+    const cached = this.foundCache.get(questId);
+    if (cached) {
+      found = true;
+      proof = cached.proof;
+      matchedItem = cached.matchedItem;
+      this.log(`  Using cached result from active window scan`);
+    } else {
+      // Final scan after window expired
+      const result = await this.checkRSSForKeyword(
+        quest.sourceUrl,
+        quest.keywordHash,
+        Number(quest.windowStart),
+        Number(quest.windowEnd)
+      );
+      found = result.found;
+      proof = result.proof;
+      matchedItem = result.matchedItem;
     }
 
     const outcome = found ? Position.Yes : Position.No;
@@ -512,6 +557,7 @@ class MentionFiOracle {
       const receipt = await tx.wait();
       this.log(`  Resolved in block ${receipt?.blockNumber}`);
       this.stats.questsResolved++;
+      this.foundCache.delete(questId);
       return true;
     } catch (error: any) {
       // Check if already resolved

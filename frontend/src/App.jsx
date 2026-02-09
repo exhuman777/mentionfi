@@ -34,16 +34,18 @@ const Position = ['None', 'Yes', 'No'];
 
 // RSS Feeds — synced with oracle/src/feeds.ts (oracle = source of truth)
 const RSS_FEEDS = [
-  { name: 'CoinDesk', url: 'https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml', tier: 'S' },
+  { name: 'CoinDesk', url: 'https://feeds.feedburner.com/CoinDesk', tier: 'S' },
   { name: 'Cointelegraph', url: 'https://cointelegraph.com/rss', tier: 'S' },
   { name: 'CryptoSlate', url: 'https://cryptoslate.com/feed/', tier: 'A' },
   { name: 'CryptoPotato', url: 'https://cryptopotato.com/feed/', tier: 'B' },
   { name: 'The Defiant', url: 'https://thedefiant.io/feed/', tier: 'A' },
   { name: 'CryptoNews', url: 'https://cryptonews.com/news/feed/', tier: 'B' },
-  { name: 'CNBC Markets', url: 'https://www.cnbc.com/id/10000664/device/rss/rss.html', tier: 'S' },
+  { name: 'Decrypt', url: 'https://decrypt.co/feed', tier: 'A' },
+  { name: 'The Block', url: 'https://www.theblock.co/rss.xml', tier: 'A' },
+  { name: 'Bitcoin Magazine', url: 'https://bitcoinmagazine.com/.rss/full/', tier: 'A' },
+  { name: 'CNBC Crypto', url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839069', tier: 'S' },
   { name: 'Hacker News', url: 'https://news.ycombinator.com/rss', tier: 'S' },
   { name: 'TechCrunch', url: 'https://techcrunch.com/feed/', tier: 'A' },
-  { name: 'Yahoo News', url: 'https://news.yahoo.com/rss/', tier: 'A' },
 ];
 
 const DURATION_PRESETS = [
@@ -54,15 +56,23 @@ const DURATION_PRESETS = [
 
 const STAKE_PRESETS = ['0.001', '0.01', '0.05', '0.1'];
 
-// Known keywords — compute hashes client-side for display (no oracle dependency)
+// Known keywords — high-frequency words that appear constantly in crypto/tech/politics news
+// Grouped by category for the Bingo board. All tested against live RSS feeds.
 const KNOWN_KEYWORDS = [
-  'bitcoin', 'ethereum', 'solana', 'xrp', 'defi', 'nft', 'stablecoin', 'binance', 'coinbase', 'sec', 'etf',
-  'deepseek', 'openai', 'anthropic', 'chatgpt', 'claude', 'ai', 'llm', 'gpt',
-  'fed', 'inflation', 'nasdaq', 'recession', 'tariff',
-  'trump', 'musk', 'china', 'russia', 'ukraine',
-  'apple', 'google', 'microsoft', 'meta', 'nvidia', 'megaeth', 'mega',
-  'war', 'hack', 'exploit', 'regulation', 'bull', 'bear', 'crash', 'pump', 'dump',
-  'tesla', 'amazon', 'tiktok', 'spacex', 'blackrock', 'vitalik', 'saylor',
+  // Crypto (appear in almost every crypto article)
+  'bitcoin', 'ethereum', 'solana', 'xrp', 'bnb', 'defi', 'nft', 'stablecoin', 'altcoin',
+  // Companies & Entities
+  'binance', 'coinbase', 'sec', 'etf', 'blackrock',
+  // AI (hot topic, appears in tech + crypto feeds)
+  'openai', 'chatgpt', 'ai', 'deepseek',
+  // Politics (always trending)
+  'trump', 'musk', 'china', 'tariff',
+  // Markets
+  'fed', 'inflation', 'nasdaq', 'bull', 'bear',
+  // Tech Giants
+  'apple', 'google', 'nvidia', 'tesla', 'spacex',
+  // Crypto Culture
+  'whale', 'airdrop', 'memecoin', 'layer 2', 'staking',
 ];
 
 // Build hash→keyword lookup at module load (pure client-side, no API needed)

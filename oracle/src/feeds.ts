@@ -10,22 +10,34 @@ export interface FeedInfo {
 }
 
 export const RSS_FEEDS_META: Record<string, FeedInfo> = {
-  // General news
-  yahooNews: {
-    url: "https://news.yahoo.com/rss/",
-    name: "Yahoo News",
-    tier: "A",
-    category: "general",
-    updateFrequency: "2-5min",
-  },
-
   // Crypto news (high frequency)
   coindesk: {
-    url: "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml",
+    url: "https://feeds.feedburner.com/CoinDesk",
     name: "CoinDesk",
     tier: "S",
     category: "crypto",
     updateFrequency: "2-5min",
+  },
+  decrypt: {
+    url: "https://decrypt.co/feed",
+    name: "Decrypt",
+    tier: "A",
+    category: "crypto",
+    updateFrequency: "5-10min",
+  },
+  theblock: {
+    url: "https://www.theblock.co/rss.xml",
+    name: "The Block",
+    tier: "A",
+    category: "crypto",
+    updateFrequency: "5-10min",
+  },
+  bitcoinmagazine: {
+    url: "https://bitcoinmagazine.com/.rss/full/",
+    name: "Bitcoin Magazine",
+    tier: "A",
+    category: "crypto",
+    updateFrequency: "10-30min",
   },
   cointelegraph: {
     url: "https://cointelegraph.com/rss",
@@ -65,11 +77,11 @@ export const RSS_FEEDS_META: Record<string, FeedInfo> = {
 
   // Markets
   cnbc: {
-    url: "https://www.cnbc.com/id/10000664/device/rss/rss.html",
-    name: "CNBC Markets",
+    url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839069",
+    name: "CNBC Crypto",
     tier: "S",
     category: "markets",
-    updateFrequency: "2-5min",
+    updateFrequency: "5-10min",
   },
 
   // Tech
