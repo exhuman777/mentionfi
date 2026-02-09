@@ -1906,8 +1906,8 @@ function MentionFiDashboard() {
                   <InfoRow label="MentionQuest" value={QUEST_ADDRESS} mono />
                   <InfoRow label="ReputationToken" value={REP_TOKEN_ADDRESS} mono />
                   <InfoRow label="Oracle Wallet" value="0x3058...6A4A" />
-                  <InfoRow label="Protocol Fee" value="5% of losing ETH pool" />
-                  <InfoRow label="Creator Reward" value="5% of losing pool" />
+                  <InfoRow label="Protocol Fee" value="5% of winnings" />
+                  <InfoRow label="Creator Reward" value="5% of winnings" />
                 </div>
               </div>
             )}
