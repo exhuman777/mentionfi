@@ -1131,7 +1131,7 @@ function startServer(oracle: MentionFiOracle, port: number, gameMaster?: GameMas
 
 // MVP: Only scan S-tier feeds for game master rounds
 // Other feeds remain in feeds.ts for future use
-const MVP_FEEDS = ["coindesk", "cointelegraph"];
+const MVP_FEEDS = ["coindesk", "cointelegraph", "decrypt", "theblock", "cryptoslate", "cryptopotato", "thedefiant", "cryptonews", "cnbc", "hackernews", "techcrunch", "bitcoinmagazine"];
 
 // Common keywords to track
 const DEFAULT_KEYWORDS = [

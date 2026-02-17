@@ -293,7 +293,7 @@ function GameScreen() {
             ['1', 'REGISTER', 'Get 100 free REP (soulbound, untransferable)'],
             ['2', 'PREDICT', 'Will this word appear in crypto news in the next 30 min?'],
             ['3', 'STAKE', 'Bet 10 REP on YES or NO'],
-            ['4', 'WAIT', 'Oracle scans CoinDesk & Cointelegraph every 15 seconds'],
+            ['4', 'WAIT', 'Oracle scans 12 RSS feeds (CoinDesk, Cointelegraph, Decrypt, etc.) every 15 seconds'],
           ].map(([n, title, desc]) => (
             <div key={n} style={{ display: 'flex', gap: 12, marginBottom: 14, alignItems: 'flex-start' }}>
               <span style={{ width: 26, height: 26, borderRadius: 6, background: 'var(--bg-4)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.72rem', fontWeight: 800, color: 'var(--accent)', flexShrink: 0, fontFamily: "'JetBrains Mono', monospace" }}>{n}</span>
@@ -364,8 +364,7 @@ function GameScreen() {
         {/* Question */}
         <p style={S.question}>
           Will this word appear in{' '}
-          <span style={{ color: 'var(--accent)' }}>CoinDesk</span> or{' '}
-          <span style={{ color: 'var(--accent)' }}>Cointelegraph</span>
+          <span style={{ color: 'var(--accent)' }}>12 crypto news feeds</span>
           <br />in the next 30 minutes?
         </p>
 

@@ -74,7 +74,7 @@ export class GameMaster {
     try {
       const tx = await this.contract.createQuest(
         entry.word,
-        "https://cointelegraph.com/rss",
+        "multi",
         windowStart,
         windowEnd
       );
