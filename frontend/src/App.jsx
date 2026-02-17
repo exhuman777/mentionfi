@@ -268,7 +268,7 @@ function GameScreen() {
         round.questId,
         position,
         ethers.parseEther(REP_STAKE),
-        0,
+        50,
         { value: ethers.parseEther(BET_AMOUNT) }
       );
       await tx.wait();
