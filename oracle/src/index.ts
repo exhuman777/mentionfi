@@ -13,6 +13,7 @@ const MENTION_QUEST_ABI = [
   "function questCount() view returns (uint256)",
   "function quests(uint256) view returns (uint256 id, address creator, bytes32 keywordHash, string sourceUrl, uint64 windowStart, uint64 windowEnd, uint64 createdAt, uint8 status, uint8 outcome)",
   "function questStakes(uint256) view returns (uint256 totalYesRepStake, uint256 totalNoRepStake, uint256 totalYesEthStake, uint256 totalNoEthStake)",
+  "function createQuest(string keyword, string sourceUrl, uint64 windowStart, uint64 windowEnd) external returns (uint256 questId)",
   "function resolveQuest(uint256 questId, uint8 outcome, bytes32 proof) external",
   "function closeQuest(uint256 questId) external",
   "event QuestCreated(uint256 indexed questId, address indexed creator, bytes32 keywordHash, string sourceUrl, uint64 windowStart, uint64 windowEnd)",
