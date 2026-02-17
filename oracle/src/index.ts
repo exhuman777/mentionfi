@@ -3,6 +3,7 @@ import Parser from "rss-parser";
 import http from "http";
 import "dotenv/config";
 import { RSS_FEEDS_META, type FeedInfo } from "./feeds.js";
+import { GameMaster } from "./gamemaster.js";
 
 // MegaETH RPC
 const MEGAETH_TESTNET_RPC = "https://carrot.megaeth.com/rpc";
@@ -99,6 +100,9 @@ class MentionFiOracle {
   private repContract: ethers.Contract | null = null;
   private rssParser: Parser;
   private stats: OracleStats;
+
+  // Game Master instance (set from main after construction)
+  public gameMaster: GameMaster | null = null;
 
   // Cache for keyword → hash mapping
   private keywordCache: Map<string, string> = new Map();
@@ -442,6 +446,20 @@ class MentionFiOracle {
   }
 
   /**
+   * Resolve feed URLs for a quest's sourceUrl.
+   * - "multi" → scan all MVP_FEEDS (CoinDesk + Cointelegraph)
+   * - specific URL → scan just that feed (backwards compatible)
+   */
+  private getFeedUrlsForQuest(sourceUrl: string): string[] {
+    if (sourceUrl === "multi") {
+      return MVP_FEEDS.map((key) => RSS_FEEDS_META[key]?.url).filter(
+        (url): url is string => !!url
+      );
+    }
+    return [sourceUrl];
+  }
+
+  /**
    * Discover keywords from on-chain QuestCreated events by decoding tx calldata
    */
   async discoverKeywordsFromChain(): Promise<void> {
@@ -578,26 +596,32 @@ class MentionFiOracle {
 
       this.log(`  Quest #${questId}: scanning for "${keyword}" (active window)`);
 
-      const { found, proof, matchedItem, articleId } =
-        await this.checkRSSForKeyword(
-          quest.sourceUrl,
-          keyword,
-          Number(quest.windowStart),
-          Number(quest.windowEnd),
-          questId
-        );
+      // Determine which feed URLs to scan
+      const feedUrls = this.getFeedUrlsForQuest(quest.sourceUrl);
 
-      if (found && articleId) {
-        this.log(
-          `  Quest #${questId}: "${keyword}" FOUND — cached for resolution after expiry`
-        );
-        // Reserve this article so no other quest can use it
-        this.usedArticles.add(articleId);
-        this.foundCache.set(questId, {
-          proof,
-          matchedItem: matchedItem || "",
-          articleId,
-        });
+      for (const feedUrl of feedUrls) {
+        const { found, proof, matchedItem, articleId } =
+          await this.checkRSSForKeyword(
+            feedUrl,
+            keyword,
+            Number(quest.windowStart),
+            Number(quest.windowEnd),
+            questId
+          );
+
+        if (found && articleId) {
+          this.log(
+            `  Quest #${questId}: "${keyword}" FOUND — cached for resolution after expiry`
+          );
+          // Reserve this article so no other quest can use it
+          this.usedArticles.add(articleId);
+          this.foundCache.set(questId, {
+            proof,
+            matchedItem: matchedItem || "",
+            articleId,
+          });
+          break; // Found in one feed, no need to check others
+        }
       }
       return false; // Never resolve during active window
     }
@@ -618,20 +642,25 @@ class MentionFiOracle {
       matchedItem = cached.matchedItem;
       this.log(`  Using cached result from active window scan`);
     } else if (keyword) {
-      // Final scan after window expired
-      const result = await this.checkRSSForKeyword(
-        quest.sourceUrl,
-        keyword,
-        Number(quest.windowStart),
-        Number(quest.windowEnd),
-        questId
-      );
-      found = result.found;
-      proof = result.proof;
-      matchedItem = result.matchedItem;
-      // Mark article as used if found
-      if (found && result.articleId) {
-        this.usedArticles.add(result.articleId);
+      // Final scan after window expired — check all relevant feeds
+      const feedUrls = this.getFeedUrlsForQuest(quest.sourceUrl);
+      for (const feedUrl of feedUrls) {
+        const result = await this.checkRSSForKeyword(
+          feedUrl,
+          keyword,
+          Number(quest.windowStart),
+          Number(quest.windowEnd),
+          questId
+        );
+        if (result.found) {
+          found = true;
+          proof = result.proof;
+          matchedItem = result.matchedItem;
+          if (result.articleId) {
+            this.usedArticles.add(result.articleId);
+          }
+          break; // Found in one feed, done
+        }
       }
     }
 
@@ -652,6 +681,12 @@ class MentionFiOracle {
       this.log(`  Resolved in block ${receipt?.blockNumber}`);
       this.stats.questsResolved++;
       this.foundCache.delete(questId);
+
+      // Notify GameMaster so round status updates for frontend
+      if (this.gameMaster) {
+        const outcomeStr = found ? "yes" : "no";
+        this.gameMaster.completeRound(outcomeStr, Number(quest.id));
+      }
       return true;
     } catch (error: any) {
       // Check if already resolved
@@ -677,7 +712,31 @@ class MentionFiOracle {
     // Discover keywords from on-chain history (fills gaps from custom quests)
     await this.discoverKeywordsFromChain();
 
+    // Game Master: track hour boundary for auto-round creation
+    let lastGameMasterHour = new Date().getHours();
+
     const tick = async () => {
+      // Game Master: detect new hour boundary for auto-round creation
+      const currentHour = new Date().getHours();
+      if (currentHour !== lastGameMasterHour) {
+        lastGameMasterHour = currentHour;
+        if (this.gameMaster) {
+          this.log("[GameMaster] New hour boundary — creating new round");
+          try {
+            const round = await this.gameMaster.startRound();
+            // Register the new word so the oracle can resolve it
+            if (round.word) {
+              this.registerKeyword(round.word);
+            }
+            this.log(`[GameMaster] Round #${round.id} started: "${round.word}" (quest #${round.questId})`);
+          } catch (error) {
+            this.logError("[GameMaster] Failed to start round:", error);
+          }
+        } else {
+          this.log("[GameMaster] New hour boundary — GameMaster not initialized");
+        }
+      }
+
       this.stats.lastCheck = new Date();
       try {
         // Refresh quest cache on every tick (powers the API)
@@ -741,7 +800,7 @@ function jsonError(message: string, status: number = 400) {
 
 // ─── HTTP Server with API Routes ─────────────────────────────
 
-function startServer(oracle: MentionFiOracle, port: number) {
+function startServer(oracle: MentionFiOracle, port: number, gameMaster?: GameMaster) {
   const server = http.createServer(async (req, res) => {
     // CORS headers on all responses
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -873,8 +932,89 @@ function startServer(oracle: MentionFiOracle, port: number) {
         return;
       }
 
+      // ─── API v1: Current Round (Game Master) ────────────
+      if (path === "/api/v1/current-round") {
+        const round = gameMaster?.getCurrentRound() ?? null;
+        if (!round) {
+          res.writeHead(200);
+          res.end(jsonLD(null, { message: "No active round. Next round starts on the hour." }));
+          return;
+        }
+        const now = Math.floor(Date.now() / 1000);
+        // Try to get quest stakes from oracle cache for pool data
+        let pool = { totalEth: "0", bets: 0, yesEth: "0", noEth: "0" };
+        if (round.questId) {
+          const questDetail = await oracle.getQuestDetail(round.questId);
+          if (questDetail) {
+            const yesEth = BigInt(questDetail.stakes.yesEth);
+            const noEth = BigInt(questDetail.stakes.noEth);
+            pool = {
+              totalEth: ethers.formatEther(yesEth + noEth),
+              bets: 0, // TODO: track bet count
+              yesEth: ethers.formatEther(yesEth),
+              noEth: ethers.formatEther(noEth),
+            };
+          }
+        }
+        res.writeHead(200);
+        res.end(jsonLD({
+          questId: round.questId,
+          word: round.word,
+          category: round.category,
+          difficulty: round.difficulty,
+          sources: ["CoinDesk", "Cointelegraph"],
+          roundStart: round.startTime,
+          roundEnd: round.endTime,
+          timeRemaining: Math.max(0, round.endTime - now),
+          status: round.status,
+          outcome: round.outcome ?? null,
+          pool,
+        }));
+        return;
+      }
+
+      // ─── API v1: Round History (Game Master) ────────────
+      if (path === "/api/v1/rounds") {
+        const history = gameMaster?.getRoundHistory() ?? [];
+        res.writeHead(200);
+        res.end(jsonLD(history, { count: history.length }));
+        return;
+      }
+
+      // ─── API v1: Game Master Status ────────────────────
+      if (path === "/api/v1/gamemaster/status") {
+        if (!gameMaster) {
+          res.writeHead(200);
+          res.end(jsonLD({ active: false, message: "GameMaster not initialized" }));
+          return;
+        }
+        const round = gameMaster.getCurrentRound();
+        const history = gameMaster.getRoundHistory();
+        const nextRoundIn = gameMaster.getNextRoundIn();
+        res.writeHead(200);
+        res.end(jsonLD({
+          active: true,
+          currentRound: round,
+          totalRoundsPlayed: history.length,
+          nextRoundIn,
+          mvpFeeds: MVP_FEEDS,
+        }));
+        return;
+      }
+
+      // ─── API v1: Next Word Countdown ────────────────────
+      if (path === "/api/v1/next-word-in") {
+        const now = new Date();
+        const next = new Date(now);
+        next.setHours(next.getHours() + 1, 0, 0, 0);
+        const seconds = Math.round((next.getTime() - now.getTime()) / 1000);
+        res.writeHead(200);
+        res.end(jsonLD({ seconds }));
+        return;
+      }
+
       // ─── 404 ──────────────────────────────────────────────
-      const err = jsonError("Not found. Try /api/v1/quests, /api/v1/feeds, /api/v1/stats, /api/v1/keywords, /api/v1/agent/:address", 404);
+      const err = jsonError("Not found. Try /api/v1/quests, /api/v1/feeds, /api/v1/stats, /api/v1/keywords, /api/v1/current-round, /api/v1/rounds, /api/v1/gamemaster/status, /api/v1/next-word-in, /api/v1/agent/:address", 404);
       res.writeHead(err.status);
       res.end(err.body);
     } catch (error: any) {
@@ -895,10 +1035,17 @@ function startServer(oracle: MentionFiOracle, port: number) {
     console.log(`  GET /api/v1/stats`);
     console.log(`  GET /api/v1/keywords`);
     console.log(`  GET /api/v1/agent/:address`);
+    console.log(`  GET /api/v1/current-round`);
+    console.log(`  GET /api/v1/rounds`);
+    console.log(`  GET /api/v1/gamemaster/status`);
   });
 
   return server;
 }
+
+// MVP: Only scan S-tier feeds for game master rounds
+// Other feeds remain in feeds.ts for future use
+const MVP_FEEDS = ["coindesk", "cointelegraph"];
 
 // Common keywords to track
 const DEFAULT_KEYWORDS = [
@@ -988,8 +1135,15 @@ async function main() {
     oracle.registerKeyword(keyword);
   }
 
-  // Start API server (replaces old health-only server)
-  startServer(oracle, port);
+  // Initialize Game Master — reuses same provider/wallet/contract address
+  const gmProvider = new ethers.JsonRpcProvider(rpc);
+  const gmWallet = new ethers.Wallet(privateKey, gmProvider);
+  const gameMaster = new GameMaster(gmProvider, gmWallet, questAddress!, MENTION_QUEST_ABI as string[]);
+  oracle.gameMaster = gameMaster;
+  console.log(`[${new Date().toISOString()}] Game Master initialized — hourly auto-rounds enabled`);
+
+  // Start API server with GameMaster
+  startServer(oracle, port, gameMaster);
 
   // Start oracle loop
   await oracle.run(interval);

@@ -52,7 +52,7 @@ export default function MentionBg() {
       y: 30 + Math.random() * (canvas.height - 60),
       x: canvasW + 100,
       speed: 0.4 + Math.random() * 0.6,
-      alpha: 0.06 + Math.random() * 0.08,
+      alpha: 0.10 + Math.random() * 0.10,
     });
 
     const resize = () => {
@@ -73,7 +73,7 @@ export default function MentionBg() {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       // Grid lines (subtle)
-      ctx.strokeStyle = "rgba(0,255,136,0.015)";
+      ctx.strokeStyle = "rgba(0,255,136,0.025)";
       ctx.lineWidth = 0.5;
       for (let x = 0; x < canvas.width; x += 60) {
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
@@ -94,7 +94,7 @@ export default function MentionBg() {
           continue;
         }
 
-        const alpha = w.life * (w.highlight ? 0.25 : 0.08);
+        const alpha = w.life * (w.highlight ? 0.35 : 0.14);
         ctx.font = `${w.size}px "JetBrains Mono", "Courier New", monospace`;
 
         if (w.glow) {
@@ -133,7 +133,7 @@ export default function MentionBg() {
       }
 
       // Occasional pulse rings (mention detected!)
-      if (Math.random() < 0.008) {
+      if (Math.random() < 0.015) {
         pulses.push({
           x: Math.random() * canvas.width,
           y: Math.random() * canvas.height,
@@ -148,7 +148,7 @@ export default function MentionBg() {
         if (p.life <= 0) { pulses.splice(i, 1); continue; }
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(0,255,136,${p.life * 0.15})`;
+        ctx.strokeStyle = `rgba(0,255,136,${p.life * 0.25})`;
         ctx.lineWidth = 1;
         ctx.stroke();
       }

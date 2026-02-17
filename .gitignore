@@ -26,3 +26,4 @@ oracle/dist/
 # IDE
 .vscode/
 .idea/
+.vercel
