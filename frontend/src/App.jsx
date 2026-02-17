@@ -278,12 +278,13 @@ function GameScreen() {
       showToast(`${posLabel} bet placed! ${BET_AMOUNT} ETH`, 'success');
       fetchRound();
     } catch (e) {
+      console.error('Bet error:', e);
       const msg = e.shortMessage || e.message || '';
       if (msg.includes('AlreadyClaimed')) { showToast('Already bet!', 'error'); setUserBet('yes'); }
       else if (msg.includes('WindowEnded')) showToast('Round ended!', 'error');
       else if (msg.includes('user rejected') || msg.includes('denied')) showToast('Cancelled', 'error');
       else if (msg.includes('insufficient')) showToast('Need more ETH or REP', 'error');
-      else showToast('Bet failed', 'error');
+      else showToast(`Bet failed: ${msg.slice(0, 80)}`, 'error');
     }
     setBetting(false);
   };
