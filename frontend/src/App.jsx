@@ -129,13 +129,18 @@ function GameScreen() {
   const [registering, setRegistering] = useState(false);
   const [betFlash, setBetFlash] = useState(false);
 
-  // 1-second tick for countdown
+  // 1-second tick for countdown + nextRoundIn decrement
   useEffect(() => {
-    const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
+    const t = setInterval(() => {
+      setNow(Math.floor(Date.now() / 1000));
+      setNextRoundIn(prev => prev !== null && prev > 0 ? prev - 1 : prev);
+    }, 1000);
     return () => clearInterval(t);
   }, []);
 
   // Fetch current round from oracle
+  const [nextRoundIn, setNextRoundIn] = useState(null);
+
   const fetchRound = useCallback(async () => {
     if (MOCK_MODE) return;
     try {
@@ -144,13 +149,25 @@ function GameScreen() {
         const json = await res.json();
         if (json.success && json.data) {
           const d = json.data;
-          // Normalize: oracle may use startTime/endTime or roundStart/roundEnd
+          setNextRoundIn(null);
           setRound({
             ...d,
             roundStart: d.roundStart ?? d.startTime,
             roundEnd: d.roundEnd ?? d.endTime,
             pool: d.pool || { totalEth: 0, bets: 0, yesEth: 0, noEth: 0 },
           });
+        } else {
+          // No active round — fetch countdown
+          setRound(null);
+          try {
+            const gm = await fetch(`${ORACLE_API}/api/v1/gamemaster/status`);
+            if (gm.ok) {
+              const gmJson = await gm.json();
+              if (gmJson.success && gmJson.data?.nextRoundIn) {
+                setNextRoundIn(gmJson.data.nextRoundIn);
+              }
+            }
+          } catch { /* ignore */ }
         }
       }
     } catch { /* oracle down */ }
@@ -323,30 +340,41 @@ function GameScreen() {
             </React.Fragment>
           ))}
           <br />
-          in the next hour?
+          in the next 30 minutes?
         </p>
 
         {/* The Word */}
-        <div style={{
-          ...S.wordBox,
-          animation: betFlash ? 'flash 0.6s ease' : 'pulse 3s ease-in-out infinite',
-        }}>
-          <div style={S.word}>{round?.word || '...'}</div>
-          {round?.category && (
-            <div style={S.wordMeta}>
-              {round.category}{round.difficulty ? ` \u00b7 ${round.difficulty}` : ''}
+        {round ? (
+          <div style={{
+            ...S.wordBox,
+            animation: betFlash ? 'flash 0.6s ease' : 'pulse 3s ease-in-out infinite',
+          }}>
+            <div style={S.word}>{round.word}</div>
+            {round.category && (
+              <div style={S.wordMeta}>
+                {round.category}{round.difficulty ? ` \u00b7 ${round.difficulty}` : ''}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{
+            ...S.wordBox,
+            animation: 'pulse 3s ease-in-out infinite',
+          }}>
+            <div style={{ ...S.word, fontSize: 24, opacity: 0.5 }}>
+              {nextRoundIn ? `Next word in ${fmtCountdown(nextRoundIn)}` : 'Waiting for next round...'}
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Timer + Progress */}
         <div style={S.timerBlock}>
           <div style={S.timerRow}>
             <span style={{
               ...S.timerText,
-              color: isUrgent ? C.no : C.text1,
+              color: !round ? C.text2 : isUrgent ? C.no : C.text1,
             }}>
-              {isExpired ? 'RESOLVING...' : fmtCountdown(remaining) + ' remaining'}
+              {!round ? (nextRoundIn ? `Starts at :${new Date(Date.now() + nextRoundIn * 1000).getMinutes().toString().padStart(2, '0')}` : 'Waiting...') : isExpired ? 'RESOLVING...' : fmtCountdown(remaining) + ' remaining'}
             </span>
           </div>
           <div style={S.progressTrack}>
