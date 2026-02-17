@@ -42,7 +42,7 @@ export class GameMaster {
 
   /**
    * Create a new round: pick a word, submit createQuest on-chain.
-   * Window: now+10s → now+3610s (1 hour). 10s buffer for block.timestamp.
+   * Window: now+10s → now+1810s (30 min). 10s buffer for block.timestamp.
    * Source: "https://cointelegraph.com/rss"
    */
   async startRound(): Promise<Round> {
@@ -50,7 +50,7 @@ export class GameMaster {
 
     const now = Math.floor(Date.now() / 1000);
     const windowStart = now + 10;
-    const windowEnd = windowStart + 3600;
+    const windowEnd = windowStart + 1800;
 
     this.roundCounter++;
     const round: Round = {
@@ -114,7 +114,7 @@ export class GameMaster {
 
       round.questId = questId;
       this.log(
-        `  Round #${round.id} live! Quest #${questId} — "${entry.word}" for 1 hour`
+        `  Round #${round.id} live! Quest #${questId} — "${entry.word}" for 30 min`
       );
     } catch (error: any) {
       if (error.message?.includes("InsufficientReputation")) {
@@ -186,12 +186,17 @@ export class GameMaster {
   }
 
   /**
-   * Seconds until the next hour boundary (:00:00).
+   * Seconds until the next 30-minute boundary (:00:00 or :30:00).
    */
   getNextRoundIn(): number {
     const now = new Date();
+    const mins = now.getMinutes();
     const next = new Date(now);
-    next.setHours(next.getHours() + 1, 0, 0, 0);
+    if (mins < 30) {
+      next.setMinutes(30, 0, 0);
+    } else {
+      next.setHours(next.getHours() + 1, 0, 0, 0);
+    }
     return Math.round((next.getTime() - now.getTime()) / 1000);
   }
 

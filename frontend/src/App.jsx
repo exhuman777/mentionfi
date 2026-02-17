@@ -11,10 +11,10 @@ const RPC_URL = 'https://carrot.megaeth.com/rpc';
 const ORACLE_API = 'https://oracle-production-aa8f.up.railway.app';
 const BET_AMOUNT = '0.01'; // Fixed MVP bet
 const REP_STAKE = '10';    // Fixed REP per bet
-const ROUND_DURATION = 3600; // 1 hour
+const ROUND_DURATION = 1800; // 30 min
 
 // Flip to false once oracle /api/v1/current-round is live
-const MOCK_MODE = true;
+const MOCK_MODE = false;
 
 const QUEST_ABI = [
   'function questCount() view returns (uint256)',

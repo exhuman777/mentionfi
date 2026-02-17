@@ -712,16 +712,20 @@ class MentionFiOracle {
     // Discover keywords from on-chain history (fills gaps from custom quests)
     await this.discoverKeywordsFromChain();
 
-    // Game Master: track hour boundary for auto-round creation
-    let lastGameMasterHour = new Date().getHours();
+    // Game Master: track 30-min boundary for auto-round creation
+    const getHalfHourSlot = () => {
+      const now = new Date();
+      return now.getHours() * 2 + (now.getMinutes() >= 30 ? 1 : 0);
+    };
+    let lastGameMasterSlot = getHalfHourSlot();
 
     const tick = async () => {
-      // Game Master: detect new hour boundary for auto-round creation
-      const currentHour = new Date().getHours();
-      if (currentHour !== lastGameMasterHour) {
-        lastGameMasterHour = currentHour;
+      // Game Master: detect new 30-min boundary for auto-round creation
+      const currentSlot = getHalfHourSlot();
+      if (currentSlot !== lastGameMasterSlot) {
+        lastGameMasterSlot = currentSlot;
         if (this.gameMaster) {
-          this.log("[GameMaster] New hour boundary — creating new round");
+          this.log("[GameMaster] New 30-min boundary — creating new round");
           try {
             const round = await this.gameMaster.startRound();
             // Register the new word so the oracle can resolve it
@@ -733,7 +737,7 @@ class MentionFiOracle {
             this.logError("[GameMaster] Failed to start round:", error);
           }
         } else {
-          this.log("[GameMaster] New hour boundary — GameMaster not initialized");
+          this.log("[GameMaster] New 30-min boundary — GameMaster not initialized");
         }
       }
 
@@ -1005,8 +1009,13 @@ function startServer(oracle: MentionFiOracle, port: number, gameMaster?: GameMas
       // ─── API v1: Next Word Countdown ────────────────────
       if (path === "/api/v1/next-word-in") {
         const now = new Date();
+        const mins = now.getMinutes();
         const next = new Date(now);
-        next.setHours(next.getHours() + 1, 0, 0, 0);
+        if (mins < 30) {
+          next.setMinutes(30, 0, 0);
+        } else {
+          next.setHours(next.getHours() + 1, 0, 0, 0);
+        }
         const seconds = Math.round((next.getTime() - now.getTime()) / 1000);
         res.writeHead(200);
         res.end(jsonLD({ seconds }));
