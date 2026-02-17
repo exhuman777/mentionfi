@@ -24,6 +24,7 @@ const MENTION_QUEST_ABI = [
 const REP_TOKEN_ABI = [
   "function balanceOf(address owner, uint256 id) view returns (uint256)",
   "function registered(address) view returns (bool)",
+  "event AgentRegistered(address indexed agent, uint256 initialRep)",
 ];
 
 // Quest status enum
@@ -123,6 +124,10 @@ class MentionFiOracle {
   // API quest cache (refreshed every tick)
   private questCache: CachedQuest[] = [];
   private questCacheTime: number = 0;
+
+  // Leaderboard cache
+  private leaderboardCache: { address: string; rep: string; rank: number }[] = [];
+  private leaderboardCacheTime: number = 0;
 
   constructor(
     rpc: string,
@@ -262,6 +267,63 @@ class MentionFiOracle {
       };
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Get leaderboard: all registered agents sorted by REP balance
+   */
+  async getLeaderboard(): Promise<{ address: string; rep: string; rank: number }[]> {
+    // Return cache if fresh (< 60s)
+    if (this.leaderboardCache.length > 0 && Date.now() - this.leaderboardCacheTime < 60000) {
+      return this.leaderboardCache;
+    }
+    await this.refreshLeaderboard();
+    return this.leaderboardCache;
+  }
+
+  private async refreshLeaderboard(): Promise<void> {
+    if (!this.repContract) return;
+    try {
+      // Collect all AgentRegistered events to find registered addresses
+      const filter = this.repContract.filters.AgentRegistered();
+      const events = await this.repContract.queryFilter(filter, 0, 'latest');
+
+      const addresses = new Set<string>();
+      for (const event of events) {
+        try {
+          const parsed = this.repContract.interface.parseLog({
+            topics: event.topics as string[],
+            data: event.data,
+          });
+          if (parsed?.args?.[0]) {
+            addresses.add(parsed.args[0]);
+          }
+        } catch { /* skip */ }
+      }
+
+      // Query REP balance for each address
+      const entries: { address: string; rep: string; rank: number }[] = [];
+      for (const addr of addresses) {
+        try {
+          const balance = await this.repContract.balanceOf(addr, 0);
+          entries.push({
+            address: addr,
+            rep: ethers.formatEther(balance),
+            rank: 0,
+          });
+        } catch { /* skip */ }
+      }
+
+      // Sort by REP descending and assign ranks
+      entries.sort((a, b) => parseFloat(b.rep) - parseFloat(a.rep));
+      entries.forEach((e, i) => { e.rank = i + 1; });
+
+      this.leaderboardCache = entries;
+      this.leaderboardCacheTime = Date.now();
+      this.log(`Leaderboard refreshed: ${entries.length} agents`);
+    } catch (error) {
+      this.logError('Failed to refresh leaderboard:', error);
     }
   }
 
@@ -947,17 +1009,22 @@ function startServer(oracle: MentionFiOracle, port: number, gameMaster?: GameMas
         }
         const now = Math.floor(Date.now() / 1000);
         // Try to get quest stakes from oracle cache for pool data
-        let pool = { totalEth: "0", bets: 0, yesEth: "0", noEth: "0" };
+        let pool: Record<string, unknown> = { totalEth: "0", bets: 0, yesEth: "0", noEth: "0", yesRep: "0", noRep: "0", totalRep: "0" };
         if (round.questId) {
           const questDetail = await oracle.getQuestDetail(round.questId);
           if (questDetail) {
             const yesEth = BigInt(questDetail.stakes.yesEth);
             const noEth = BigInt(questDetail.stakes.noEth);
+            const yesRep = BigInt(questDetail.stakes.yesRep);
+            const noRep = BigInt(questDetail.stakes.noRep);
             pool = {
               totalEth: ethers.formatEther(yesEth + noEth),
-              bets: 0, // TODO: track bet count
+              bets: 0,
               yesEth: ethers.formatEther(yesEth),
               noEth: ethers.formatEther(noEth),
+              yesRep: questDetail.stakes.yesRep,
+              noRep: questDetail.stakes.noRep,
+              totalRep: ethers.formatEther(yesRep + noRep),
             };
           }
         }
@@ -1023,8 +1090,16 @@ function startServer(oracle: MentionFiOracle, port: number, gameMaster?: GameMas
         return;
       }
 
+      // ─── API v1: Leaderboard ────────────────────────────
+      if (path === "/api/v1/leaderboard") {
+        const leaderboard = await oracle.getLeaderboard();
+        res.writeHead(200);
+        res.end(jsonLD(leaderboard, { count: leaderboard.length }));
+        return;
+      }
+
       // ─── 404 ──────────────────────────────────────────────
-      const err = jsonError("Not found. Try /api/v1/quests, /api/v1/feeds, /api/v1/stats, /api/v1/keywords, /api/v1/current-round, /api/v1/rounds, /api/v1/gamemaster/status, /api/v1/next-word-in, /api/v1/agent/:address", 404);
+      const err = jsonError("Not found. Try /api/v1/quests, /api/v1/feeds, /api/v1/stats, /api/v1/keywords, /api/v1/leaderboard, /api/v1/current-round, /api/v1/rounds, /api/v1/gamemaster/status, /api/v1/next-word-in, /api/v1/agent/:address", 404);
       res.writeHead(err.status);
       res.end(err.body);
     } catch (error: any) {
@@ -1048,6 +1123,7 @@ function startServer(oracle: MentionFiOracle, port: number, gameMaster?: GameMas
     console.log(`  GET /api/v1/current-round`);
     console.log(`  GET /api/v1/rounds`);
     console.log(`  GET /api/v1/gamemaster/status`);
+    console.log(`  GET /api/v1/leaderboard`);
   });
 
   return server;

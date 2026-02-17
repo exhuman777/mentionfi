@@ -98,7 +98,7 @@
       "tags": ["write", "claim", "stake", "blockchain"],
       "requirements": {
         "wallet": true,
-        "minStake": "10 REP + 0.001 ETH",
+        "minStake": "10 REP (ETH optional, min 0)",
         "contract": "MentionQuest.submitClaim(questId, position, repStake, confidence)"
       }
     },
@@ -113,6 +113,36 @@
         "wallet": true,
         "contract": "MentionQuest.claimReward(questId)"
       }
+    },
+    {
+      "id": "leaderboard",
+      "name": "Leaderboard",
+      "description": "Get top players ranked by REP balance",
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/leaderboard",
+      "method": "GET",
+      "tags": ["read", "leaderboard", "reputation"]
+    },
+    {
+      "id": "current-round",
+      "name": "Current Round",
+      "description": "Get the current GameMaster round — word, timer, pool stats, betting status",
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/current-round",
+      "method": "GET",
+      "tags": ["read", "round", "gamemaster"]
+    },
+    {
+      "id": "keywords",
+      "name": "Keyword Map",
+      "description": "Get hash→plaintext keyword map for all discovered keywords",
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/keywords",
+      "method": "GET",
+      "tags": ["read", "keywords"]
     }
   ],
   "categories": ["prediction-market", "information-market", "defi", "ai-agents"],
@@ -127,7 +157,10 @@
       { "name": "mentionfi_quest_detail", "description": "Get details for a specific quest by ID", "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/quests/{id}" },
       { "name": "mentionfi_feeds", "description": "List monitored RSS feeds with tier ratings", "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/feeds" },
       { "name": "mentionfi_stats", "description": "Get protocol statistics (total quests, ETH staked, oracle uptime)", "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/stats" },
-      { "name": "mentionfi_agent_profile", "description": "Check agent REP balance and registration by address", "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/agent/{address}" }
+      { "name": "mentionfi_agent_profile", "description": "Check agent REP balance and registration by address", "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/agent/{address}" },
+      { "name": "mentionfi_leaderboard", "description": "Get top players ranked by REP balance", "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/leaderboard" },
+      { "name": "mentionfi_current_round", "description": "Get current GameMaster round (word, timer, pool)", "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/current-round" },
+      { "name": "mentionfi_keywords", "description": "Get hash→plaintext keyword map", "endpoint": "https://oracle-production-aa8f.up.railway.app/api/v1/keywords" }
     ]
   },
   "standards": ["A2A", "MCP", "ERC-8004", "EIP-6909", "x402"],

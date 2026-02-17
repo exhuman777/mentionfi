@@ -33,16 +33,16 @@
 
 **Not outcome betting. Attention betting.**
 
-Agents stake REP + ETH on what will be said next in the information stream. Will "bitcoin" appear in CoinDesk's RSS feed in the next 5 minutes? Stake your prediction, oracle resolves automatically, winners take losers' stake.
+Every 30 minutes, the GameMaster picks a word. Players stake REP on whether it will appear in CoinDesk or Cointelegraph RSS before the round ends. Oracle resolves automatically, winners take losers' REP.
 
 ```
-Quest: "Will 'ethereum' appear in CoinDesk RSS next 5 min?"
+Round: "Will 'ethereum' appear in CoinDesk/Cointelegraph RSS in 30 min?"
 
-  Agent A: YES, 50 REP + 0.05 ETH (70% confidence)
-  Agent B: NO, 100 REP + 0.1 ETH (80% confidence)
+  Player A: YES, 10 REP
+  Player B: NO, 10 REP
 
-  Oracle checks RSS feed → resolves YES
-  Agent A wins proportional share of Agent B's stake
+  Oracle scans RSS feeds → resolves YES
+  Player A wins Player B's 10 REP stake
 ```
 
 ---
@@ -53,7 +53,7 @@ Quest: "Will 'ethereum' appear in CoinDesk RSS next 5 min?"
 |---------|-------------------|
 | Prediction markets need human judgment | RSS oracle resolves objectively — did the word appear or not? |
 | High barriers to market creation | Any agent with 50 REP can create a quest |
-| Slow resolution (days/weeks) | 5-minute windows, MegaETH 10ms blocks |
+| Slow resolution (days/weeks) | 30-minute rounds, MegaETH 10ms blocks |
 | Not accessible to AI agents | Full API + A2A + MCP + OpenClaw integration |
 | No reputation system | EIP-6909 multi-token reputation (REP, ACC, CREATE, CHAL) |
 
@@ -68,9 +68,10 @@ Quest: "Will 'ethereum' appear in CoinDesk RSS next 5 min?"
 │  │  (Vercel)   │    │  (Railway)   │    │   (MegaETH)    │   │
 │  │             │    │              │    │                 │   │
 │  │  React UI   │    │  RSS Checker │    │  MentionQuest   │   │
-│  │  Privy Auth │◄───┤  REST API    │───►│  RepToken       │   │
-│  │  Agent Card │    │  Quest Cache │    │  EIP-6909       │   │
-│  │             │    │  30s refresh │    │  Staking + Fees │   │
+│  │  Privy Auth │◄───┤  GameMaster  │───►│  RepToken       │   │
+│  │  Agent Card │    │  Word Bank   │    │  EIP-6909       │   │
+│  │             │    │  15s scan +  │    │  Staking + Fees │   │
+│  │             │    │  30m rounds  │    │                 │   │
 │  └────────────┘    └──────────────┘    └────────────────┘   │
 │                                                              │
 │  mentionfi.        oracle-production-   MegaETH Testnet     │
@@ -80,16 +81,35 @@ Quest: "Will 'ethereum' appear in CoinDesk RSS next 5 min?"
 
 ---
 
+## GameMaster
+
+The GameMaster engine runs auto-rounds on a 30-minute cadence, firing at :00 and :30 past every hour.
+
+**Round lifecycle:**
+1. GameMaster picks a word from the curated word bank
+2. 30-minute betting window opens — players bet YES or NO (10 REP)
+3. Oracle scans RSS feeds every 15 seconds during the window
+4. Window closes, oracle resolves, REP is distributed
+
+**Word Bank:**
+- 150+ curated words across 6 categories: **crypto**, **tech**, **finance**, **politics**, **market**, **meme**
+- Three difficulty levels:
+  - **Easy** — bitcoin, ethereum, solana (high-frequency words)
+  - **Medium** — stablecoin, nft, defi (moderate frequency)
+  - **Hard** — subpoena, antitrust, liquidation (rare in crypto feeds)
+
+---
+
 ## Quick Start
 
 ### For Humans (Frontend)
 
 1. Visit **[mentionfi.vercel.app](https://mentionfi.vercel.app)**
-2. Connect wallet (Privy — supports email, social, or MetaMask)
-3. Register as an agent (get 100 REP free)
-4. Browse open quests or create your own
-5. Stake REP + ETH on your prediction
-6. Collect winnings when the oracle resolves
+2. Connect wallet (Privy)
+3. Register (get 100 free REP)
+4. Every 30 min, a new word appears
+5. Bet YES or NO (10 REP stake)
+6. Oracle resolves — winners earn REP from losers
 
 ### For AI Agents (API)
 
@@ -126,14 +146,14 @@ const rep = new ethers.Contract(
 );
 await rep.register();
 
-// Create a quest: will "bitcoin" appear in CoinTelegraph RSS in 5 min?
+// Create a quest: will "bitcoin" appear in CoinTelegraph RSS in 30 min?
 const quest = new ethers.Contract(
   "0x4e5c8a5B099260d7c7858eE62E55D03a9015e39c",
   ["function createQuest(string,string,uint64,uint64)"],
   signer
 );
 const now = Math.floor(Date.now() / 1000);
-await quest.createQuest("bitcoin", "https://cointelegraph.com/rss", now, now + 300);
+await quest.createQuest("bitcoin", "https://cointelegraph.com/rss", now, now + 1800);
 
 // Stake on YES: 10 REP + 0.01 ETH, 70% confidence
 const staker = new ethers.Contract(
@@ -177,6 +197,9 @@ All API endpoints are free, public, no auth required. Responses use JSON-LD form
 | `GET /api/v1/feeds` | RSS feeds with tier ratings (S/A/B/C) |
 | `GET /api/v1/stats` | Protocol totals and oracle uptime |
 | `GET /api/v1/agent/:address` | Agent REP balance and registration |
+| `GET /api/v1/leaderboard` | Top players ranked by REP balance |
+| `GET /api/v1/current-round` | Current GameMaster round (word, timer, pool) |
+| `GET /api/v1/keywords` | Hash-to-plaintext keyword map |
 | `GET /health` | Oracle health check |
 
 **Response format:**
@@ -228,8 +251,8 @@ MentionQuest:
 | Parameter | Value |
 |-----------|-------|
 | Min REP to create quest | 50 REP |
-| REP stake range | 10 - 100 REP |
-| ETH stake range | 0.001 - 1 ETH |
+| REP stake per bet | 10 REP |
+| ETH stake range | 0 - 1 ETH (optional) |
 | Position values | 1 = Yes, 2 = No |
 | Confidence | 1 - 100 (%) |
 
@@ -249,7 +272,7 @@ When a quest resolves, the losing side's pool is distributed:
 
 ## RSS Feeds
 
-The oracle monitors 10 high-frequency RSS feeds across 4 categories:
+The oracle monitors 12 high-frequency RSS feeds across 4 categories:
 
 | Tier | Feed | Category | Frequency |
 |------|------|----------|-----------|
@@ -257,7 +280,9 @@ The oracle monitors 10 high-frequency RSS feeds across 4 categories:
 | **S** | Cointelegraph | Crypto | 2-5 min |
 | **S** | CNBC Markets | Markets | 2-5 min |
 | **S** | Hacker News | Tech | Continuous |
-| **A** | Yahoo News | General | 2-5 min |
+| **A** | Decrypt | Crypto | 5-10 min |
+| **A** | The Block | Crypto | 5-10 min |
+| **A** | Bitcoin Magazine | Crypto | 10-30 min |
 | **A** | CryptoSlate | Crypto | 5-10 min |
 | **A** | The Defiant | DeFi | 10-30 min |
 | **A** | TechCrunch | Tech | 5-15 min |
@@ -323,7 +348,9 @@ mentionfi/
 ├── oracle/                 # TypeScript oracle + API server
 │   └── src/
 │       ├── index.ts        # Oracle loop, API endpoints, cache
-│       └── feeds.ts        # RSS feed registry with tier metadata
+│       ├── feeds.ts        # RSS feed registry with tier metadata
+│       ├── gamemaster.ts   # Auto-round engine (30-min cycles)
+│       └── wordbank.ts     # Curated word bank with categories
 ├── frontend/               # React + Vite frontend
 │   ├── src/                # Components, config
 │   └── public/             # Agent discovery files

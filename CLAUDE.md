@@ -14,7 +14,9 @@ mentionfi/
 ├── oracle/               # TypeScript oracle + API (Railway)
 │   └── src/
 │       ├── index.ts      # Oracle loop + HTTP API server
-│       └── feeds.ts      # RSS feed registry with metadata
+│       ├── feeds.ts      # RSS feed registry with metadata
+│       ├── gamemaster.ts # Auto-round engine (30-min cycles)
+│       └── wordbank.ts   # Curated word bank (150+ words)
 ├── frontend/             # React + Vite (Vercel)
 │   ├── src/App.jsx       # Single-file React app
 │   └── public/           # Static files (agent-card, etc.)
@@ -77,6 +79,9 @@ All responses use JSON-LD format with `@context`, `success`, `data`, `meta`.
 | GET | `/api/v1/stats` | Protocol stats: total quests, ETH staked, feed count, oracle uptime |
 | GET | `/api/v1/keywords` | Hash→plaintext keyword map (all keywords discovered from chain) |
 | GET | `/api/v1/agent/:address` | Agent REP balance |
+| GET | `/api/v1/leaderboard` | Top players ranked by REP |
+| GET | `/api/v1/current-round` | Current GameMaster round (word, timer, pool) |
+| GET | `/api/v1/keywords` | Hash→plaintext keyword map |
 
 ### Example Responses
 
@@ -135,6 +140,12 @@ All responses use JSON-LD format with `@context`, `success`, `data`, `meta`.
   "meta": { "count": 42 }
 }
 ```
+
+### GameMaster Auto-Rounds
+- Fires every 30 minutes (at :00 and :30 UTC)
+- Picks words from curated bank (150+ words: crypto, tech, finance, politics)
+- Creates quest on-chain with 30-minute betting window
+- Oracle resolves automatically after window expires
 
 ### RSS Feeds (12 Active)
 

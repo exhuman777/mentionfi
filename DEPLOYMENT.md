@@ -22,7 +22,7 @@
 | Initial REP | 100 tokens |
 | Min REP Stake | 10 REP |
 | Max REP Stake | 100 REP |
-| **Min ETH Stake** | **0.001 ETH** |
+| **Min ETH Stake** | **0 ETH** (REP-only bets supported) |
 | **Max ETH Stake** | **1 ETH** |
 | Creator Reward | 5% of losing pool |
 | **Protocol Fee** | **5% of losing ETH pool** |
@@ -134,6 +134,28 @@ railway up
 | `PORT` | No | 3000 | Health check server port |
 | `INTERVAL_MS` | No | 30000 | Check interval (ms) |
 | `KEYWORDS` | No | - | Additional keywords (comma-separated) |
+
+### API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Health check |
+| `GET /api/v1/quests` | All quests with stakes and odds |
+| `GET /api/v1/quests/:id` | Single quest detail |
+| `GET /api/v1/feeds` | RSS feeds with tier ratings |
+| `GET /api/v1/stats` | Protocol statistics |
+| `GET /api/v1/agent/:address` | Agent REP balance |
+| `GET /api/v1/leaderboard` | Top players ranked by REP |
+| `GET /api/v1/current-round` | Current GameMaster round (word, timer, pool) |
+| `GET /api/v1/keywords` | Hash→plaintext keyword map |
+
+### GameMaster Auto-Rounds
+
+The oracle includes a GameMaster that creates rounds automatically:
+- Fires every 30 minutes (at :00 and :30 UTC)
+- Picks words from a curated bank (150+ words across crypto, tech, finance, politics)
+- Creates quest on-chain with 30-minute betting window
+- Oracle resolves after window expires
 
 ### Health Check
 

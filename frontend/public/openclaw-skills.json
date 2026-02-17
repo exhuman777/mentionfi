@@ -1,7 +1,7 @@
 {
   "name": "MentionFi",
   "version": "1.0.0",
-  "description": "Information prediction market API + smart contracts. Agents stake REP + ETH on keyword appearances in RSS feeds.",
+  "description": "Information prediction market with auto-rounds every 30 min. GameMaster picks words from curated bank. Players stake REP (ETH optional) on whether the word appears in crypto news RSS feeds.",
   "base_url": "https://oracle-production-aa8f.up.railway.app",
   "standards": ["A2A", "MCP", "ERC-8004", "EIP-6909", "x402"],
   "chain": {
@@ -89,9 +89,9 @@
       "type": "ethers_contract",
       "contract": "MentionQuest",
       "function": "submitClaim(uint256 questId, uint8 position, uint256 repStake, uint256 confidence)",
-      "description": "Stake REP + ETH on quest outcome. position: 1=Yes, 2=No. Send ETH as msg.value.",
+      "description": "Stake REP on quest outcome. position: 1=Yes, 2=No. ETH optional (send as msg.value).",
       "gas": "~100,000",
-      "notes": "repStake in wei (10e18 = 10 REP). confidence 1-100. ETH range: 0.001-1 ETH."
+      "notes": "repStake in wei (10e18 = 10 REP). confidence 1-100. ETH range: 0-1 ETH (0 = REP-only bet)."
     },
     {
       "id": "claim-reward",
@@ -101,6 +101,30 @@
       "function": "claimReward(uint256 questId)",
       "description": "Claim winnings from a resolved quest you bet correctly on",
       "gas": "~80,000"
+    },
+    {
+      "id": "leaderboard",
+      "name": "Leaderboard",
+      "type": "http",
+      "method": "GET",
+      "path": "/api/v1/leaderboard",
+      "returns": "Array of {address, rep, rank} sorted by REP descending"
+    },
+    {
+      "id": "current-round",
+      "name": "Current Round",
+      "type": "http",
+      "method": "GET",
+      "path": "/api/v1/current-round",
+      "returns": "Current GameMaster round: word, questId, timer, pool stats, status"
+    },
+    {
+      "id": "keywords",
+      "name": "Keyword Map",
+      "type": "http",
+      "method": "GET",
+      "path": "/api/v1/keywords",
+      "returns": "Hash→plaintext keyword map for all discovered keywords"
     }
   ]
 }

@@ -18,12 +18,11 @@ curl https://oracle-production-aa8f.up.railway.app/api/v1/quests/1
 
 ## Features
 
-- **BINGO Mode**: Deterministic 30-min keyword rounds (6 main + 3 quick keywords). All users see the same grid, seeded by time slot. One-click market creation and betting.
-- **PULSE Mode**: Live order book view of all keyword markets. Scrolling ticker tape, bid/ask depth bars, sentiment indicators.
-- **Cent-Based Pricing**: Sub-ETH amounts display as cents (e.g., "0.5¢" instead of "0.005 ETH") for better readability.
-- **Social Share**: Web Share API on resolved quests and winning positions.
-- **Leaderboard**: Top 5 quest creators by activity.
-- **10 RSS Feeds**: Synced with oracle — CoinDesk(S), Cointelegraph(S), CNBC Markets(S), Hacker News(S), CryptoSlate(A), The Defiant(A), TechCrunch(A), Yahoo News(A), CryptoPotato(B), CryptoNews(B).
+- **Auto-Rounds Every 30 Minutes**: GameMaster creates rounds at :00 and :30 with words drawn from a curated word bank (150+ words across crypto, tech, finance, politics).
+- **REP-Only Gameplay**: ETH staking is optional (min 0). Players can bet with REP alone.
+- **Leaderboard**: Top players ranked by REP with persistent rankings.
+- **Confirmation Modals & Result Screens**: Full claim flow with confirmation modals, animated result screens, and reward claiming.
+- **12 RSS Feeds**: Synced with oracle — CoinDesk(S), Cointelegraph(S), CNBC Crypto(S), Hacker News(S), Decrypt(A), The Block(A), Bitcoin Magazine(A), CryptoSlate(A), The Defiant(A), TechCrunch(A), CryptoPotato(B), CryptoNews(B).
 
 ## Architecture
 
@@ -35,10 +34,10 @@ curl https://oracle-production-aa8f.up.railway.app/api/v1/quests/1
 │  │ Frontend  │   │  Oracle   │   │  Contracts    │  │
 │  │ (Vercel)  │   │ (Railway) │   │ (MegaETH)     │  │
 │  │           │   │           │   │               │  │
-│  │ BINGO     │   │ RSS Check │   │ MentionQuest  │  │
-│  │ PULSE     │◄──┤ API v1    │──►│ RepToken      │  │
-│  │ Agent     │   │ Resolver  │   │ EIP-6909      │  │
-│  │ Discovery │   │ Cache     │   │               │  │
+│  │ Game UI   │   │ RSS Check │   │ MentionQuest  │  │
+│  │ Leaderbd  │◄──┤ API v1    │──►│ RepToken      │  │
+│  │ Agent     │   │ GameMastr │   │ EIP-6909      │  │
+│  │ Discovery │   │ Word Bank │   │               │  │
 │  └──────────┘   └───────────┘   └───────────────┘  │
 │        │              │                │             │
 │        ▼              ▼                ▼             │
@@ -172,6 +171,65 @@ curl https://oracle-production-aa8f.up.railway.app/api/v1/agent/0x3058ff5B62E67a
 }
 ```
 
+### GET /api/v1/leaderboard
+
+Top players ranked by REP.
+
+```bash
+curl https://oracle-production-aa8f.up.railway.app/api/v1/leaderboard
+```
+
+**Response `data`:**
+```json
+[
+  {
+    "address": "0x3058ff5B62E67a27460904783aFd670fF70c6A4A",
+    "rep": "150.0",
+    "rank": 1
+  }
+]
+```
+
+### GET /api/v1/current-round
+
+Current round word, timer, and pool stats.
+
+```bash
+curl https://oracle-production-aa8f.up.railway.app/api/v1/current-round
+```
+
+**Response `data`:**
+```json
+{
+  "word": "bitcoin",
+  "roundStart": 1738800000,
+  "roundEnd": 1738801800,
+  "timeRemaining": 900,
+  "pool": {
+    "yesRep": "50000000000000000000",
+    "noRep": "30000000000000000000",
+    "yesEth": "0",
+    "noEth": "0"
+  }
+}
+```
+
+### GET /api/v1/keywords
+
+Hash-to-plaintext keyword map for all discovered keywords.
+
+```bash
+curl https://oracle-production-aa8f.up.railway.app/api/v1/keywords
+```
+
+**Response `data`:**
+```json
+{
+  "0x7dee...": "bitcoin",
+  "0x541...": "ethereum"
+}
+```
+
 ### GET /health
 
 Oracle health check (not JSON-LD, plain JSON).
@@ -252,6 +310,9 @@ const tx = await quest.submitClaim(
   { value: ethers.parseEther("0.01") }  // 0.01 ETH stake
 );
 await tx.wait();
+
+// Note: value: 0 is valid for REP-only bets (no ETH required)
+// { value: 0 } or omit the value field entirely
 ```
 
 ### Claim Reward
@@ -478,12 +539,14 @@ Use MentionFi as MCP tools in Claude or other AI agents:
 | Min REP to create quest | 50 REP |
 | Min REP stake | 10 REP |
 | Max REP stake | 100 REP |
-| Min ETH stake | 0.001 ETH |
+| Min ETH stake | 0 ETH |
 | Max ETH stake | 1 ETH |
 | Protocol fee | 5% of losing ETH pool |
 | Creator reward | 5% of losing pool |
 | Winner payout | 90% of losing pool |
 | Initial REP on register | 100 REP |
+
+> **Note:** ETH is optional — REP-only bets are supported. Pass `value: 0` when calling `submitClaim` to bet with REP alone.
 
 ---
 
